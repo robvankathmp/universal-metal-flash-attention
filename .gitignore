@@ -1,0 +1,44 @@
+# Build artifacts
+.build/
+.swiftpm/
+*.o
+*.so
+*.dylib
+*.a
+DerivedData/
+
+# Rust build artifacts
+examples/rust/target/
+examples/rust/Cargo.lock
+
+# Python artifacts
+examples/python/venv/
+examples/python/__pycache__/
+examples/python/src/umfa/__pycache__/
+examples/python/**/__pycache__/
+examples/python/src/**/__pycache__/
+*.pyc
+*.pyo
+
+# Bindgen output (contains local paths)
+examples/rust/target/debug/build/*/out/
+examples/rust/target/release/build/*/out/
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+.DS_Store
+*.dSYM
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Any files that might contain usernames or local paths
+*.build/
+**/build/

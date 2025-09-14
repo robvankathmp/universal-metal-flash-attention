@@ -1,0 +1,22 @@
+[package]
+name = "mfa-rust-example"
+version = "0.1.0"
+edition = "2021"
+authors = ["Universal Metal Flash Attention Contributors"]
+description = "High-performance Rust example for Universal Metal Flash Attention"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+bindgen = "0.70"
+
+[profile.release]
+codegen-units = 1
+panic = "abort"
+lto = true
+opt-level = 3
+
+[profile.dev]
+opt-level = 1
