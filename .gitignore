@@ -41,4 +41,4 @@ examples/rust/target/release/build/*/out/
 
 # Any files that might contain usernames or local paths
 *.build/
-**/build/
+**/build/*/venv/*
