@@ -38,7 +38,7 @@ fn main() {
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
 
-    // Link against the MFA FFI library
-    println!("cargo:rustc-link-search=native=../../.build/release");
+    // Link against the MFA FFI library (dynamic)
+    println!("cargo:rustc-link-search=native=../../.build/debug");
     println!("cargo:rustc-link-lib=dylib=MFAFFI");
 }

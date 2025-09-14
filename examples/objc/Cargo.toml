@@ -1,0 +1,16 @@
+[package]
+name = "mfa-objc-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+objc = "0.2"
+libc = "0.2"
+
+[build-dependencies]
+bindgen = "0.70"
+cc = "1.0"
+
+[[bin]]
+name = "mfa-objc-example"
+path = "src/real_main.rs"
