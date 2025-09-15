@@ -360,22 +360,25 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention(
 
     result = mfa_buffer_from_ptr(swift_context_, k_cpu.data_ptr(), k_bytes, &k_buffer);
     if (result != MFA_SUCCESS) {
-        mfa_destroy_buffer(q_buffer);
+        // Note: Don't destroy external memory buffers
+        // mfa_destroy_buffer(q_buffer);
         throw std::runtime_error("Failed to create key buffer for quantized attention");
     }
 
     result = mfa_buffer_from_ptr(swift_context_, v_cpu.data_ptr(), v_bytes, &v_buffer);
     if (result != MFA_SUCCESS) {
-        mfa_destroy_buffer(q_buffer);
-        mfa_destroy_buffer(k_buffer);
+        // Note: Don't destroy external memory buffers
+        // mfa_destroy_buffer(q_buffer);
+        // mfa_destroy_buffer(k_buffer);
         throw std::runtime_error("Failed to create value buffer for quantized attention");
     }
 
     result = mfa_buffer_from_ptr(swift_context_, output.data_ptr(), out_bytes, &out_buffer);
     if (result != MFA_SUCCESS) {
-        mfa_destroy_buffer(q_buffer);
-        mfa_destroy_buffer(k_buffer);
-        mfa_destroy_buffer(v_buffer);
+        // Note: Don't destroy external memory buffers
+        // mfa_destroy_buffer(q_buffer);
+        // mfa_destroy_buffer(k_buffer);
+        // mfa_destroy_buffer(v_buffer);
         throw std::runtime_error("Failed to create output buffer for quantized attention");
     }
 
@@ -401,20 +404,26 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention(
         }
 
         // Cleanup buffers
-        mfa_destroy_buffer(q_buffer);
-        mfa_destroy_buffer(k_buffer);
-        mfa_destroy_buffer(v_buffer);
-        mfa_destroy_buffer(out_buffer);
+        // Note: For external memory buffers (created with mfa_buffer_from_ptr),
+        // we should NOT call mfa_destroy_buffer as it can cause crashes.
+        // The underlying PyTorch tensors manage their own memory.
+        // if (q_buffer) mfa_destroy_buffer(q_buffer);
+        // if (k_buffer) mfa_destroy_buffer(k_buffer);
+        // if (v_buffer) mfa_destroy_buffer(v_buffer);
+        // if (out_buffer) mfa_destroy_buffer(out_buffer);
 
         // Move output back to original device
         return output.to(query.device());
 
     } catch (...) {
         // Cleanup on exception
-        mfa_destroy_buffer(q_buffer);
-        mfa_destroy_buffer(k_buffer);
-        mfa_destroy_buffer(v_buffer);
-        mfa_destroy_buffer(out_buffer);
+        // Note: For external memory buffers (created with mfa_buffer_from_ptr),
+        // we should NOT call mfa_destroy_buffer as it can cause crashes.
+        // The underlying PyTorch tensors manage their own memory.
+        // if (q_buffer) mfa_destroy_buffer(q_buffer);
+        // if (k_buffer) mfa_destroy_buffer(k_buffer);
+        // if (v_buffer) mfa_destroy_buffer(v_buffer);
+        // if (out_buffer) mfa_destroy_buffer(out_buffer);
         throw;
     }
 }
