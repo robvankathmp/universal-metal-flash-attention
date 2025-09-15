@@ -343,6 +343,32 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention(
         v_scale = v_cpu.abs().max().item<float>() / 7.0f;
     }
 
+    // 🔧 FIX: Actually quantize Q, K and V tensors to INT8
+    // Swift expects quantized data, not FP32 data + scales
+
+    // Calculate Q scale too
+    float q_scale;
+    if (precision == "int8") {
+        q_scale = q_cpu.abs().max().item<float>() / 127.0f;
+    } else { // int4
+        q_scale = q_cpu.abs().max().item<float>() / 7.0f;
+    }
+
+    torch::Tensor q_quantized, k_quantized, v_quantized;
+
+    if (precision == "int8") {
+        // Quantize Q: FP32 -> INT8
+        q_quantized = torch::round(q_cpu / q_scale).clamp(-127, 127).to(torch::kInt8);
+        // Quantize K: FP32 -> INT8
+        k_quantized = torch::round(k_cpu / k_scale).clamp(-127, 127).to(torch::kInt8);
+        // Quantize V: FP32 -> INT8
+        v_quantized = torch::round(v_cpu / v_scale).clamp(-127, 127).to(torch::kInt8);
+    } else { // int4 - clamp to 4-bit range
+        q_quantized = torch::round(q_cpu / q_scale).clamp(-7, 7).to(torch::kInt8);
+        k_quantized = torch::round(k_cpu / k_scale).clamp(-7, 7).to(torch::kInt8); // Store as INT8 but use 4-bit range
+        v_quantized = torch::round(v_cpu / v_scale).clamp(-7, 7).to(torch::kInt8);
+    }
+
     // Create MFA buffers
     mfa_buffer_t q_buffer, k_buffer, v_buffer, out_buffer;
 
@@ -353,19 +379,25 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention(
 
     mfa_error_t result;
 
-    result = mfa_buffer_from_ptr(swift_context_, q_cpu.data_ptr(), q_bytes, &q_buffer);
+    // 🔧 FIX: Use quantized Q tensor data too
+    size_t q_quantized_bytes = q_quantized.numel() * q_quantized.element_size();
+    result = mfa_buffer_from_ptr(swift_context_, q_quantized.data_ptr(), q_quantized_bytes, &q_buffer);
     if (result != MFA_SUCCESS) {
         throw std::runtime_error("Failed to create query buffer for quantized attention");
     }
 
-    result = mfa_buffer_from_ptr(swift_context_, k_cpu.data_ptr(), k_bytes, &k_buffer);
+    // 🔧 FIX: Use quantized tensor data and update buffer size for INT8
+    size_t k_quantized_bytes = k_quantized.numel() * k_quantized.element_size();
+    result = mfa_buffer_from_ptr(swift_context_, k_quantized.data_ptr(), k_quantized_bytes, &k_buffer);
     if (result != MFA_SUCCESS) {
         // Note: Don't destroy external memory buffers
         // mfa_destroy_buffer(q_buffer);
         throw std::runtime_error("Failed to create key buffer for quantized attention");
     }
 
-    result = mfa_buffer_from_ptr(swift_context_, v_cpu.data_ptr(), v_bytes, &v_buffer);
+    // 🔧 FIX: Use quantized tensor data and update buffer size for INT8
+    size_t v_quantized_bytes = v_quantized.numel() * v_quantized.element_size();
+    result = mfa_buffer_from_ptr(swift_context_, v_quantized.data_ptr(), v_quantized_bytes, &v_buffer);
     if (result != MFA_SUCCESS) {
         // Note: Don't destroy external memory buffers
         // mfa_destroy_buffer(q_buffer);
@@ -389,7 +421,7 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention(
             q_buffer, k_buffer, v_buffer, out_buffer,
             batch_size, seq_len_q, seq_len_kv, num_heads, head_dim,
             softmax_scale, is_causal,
-            1.0f, 0,  // Q scale and zero point (no quantization for query)
+            q_scale, 0,  // 🔧 FIX: Use calculated Q scale, not 1.0
             k_scale, k_zero_point,
             v_scale, v_zero_point,
             q_precision,

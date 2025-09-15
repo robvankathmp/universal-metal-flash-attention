@@ -496,6 +496,8 @@ public func mfa_attention_forward_quantized(
 )
   -> Int32
 {
+  print("🔥 QUANTIZED ATTENTION ENTRY: numHeads=\(numHeads), seqLenQ=\(seqLenQ), headDim=\(headDim)")
+
   guard
     let context,
     let q, let k, let v, let out
@@ -1100,6 +1102,17 @@ private func mfa_attention_forward_quantized_multihead_internal(
       return 2 // MFA_ERROR_MEMORY_ALLOCATION
     }
 
+    // 🔍 DEBUG: Check dequantized buffer contents before MultiHeadAttention
+    print("🔍 DEBUG BEFORE MHA:")
+    let qPtr = dequantizedQ.contents().bindMemory(to: Float16.self, capacity: 8)
+    print("  DequantQ[0:8]: \(Array(UnsafeBufferPointer(start: qPtr, count: 8)))")
+
+    let kPtr = dequantizedK.contents().bindMemory(to: Float16.self, capacity: 8)
+    print("  DequantK[0:8]: \(Array(UnsafeBufferPointer(start: kPtr, count: 8)))")
+
+    let vPtr = dequantizedV.contents().bindMemory(to: Float16.self, capacity: 8)
+    print("  DequantV[0:8]: \(Array(UnsafeBufferPointer(start: vPtr, count: 8)))")
+
     // Execute REAL parallel multi-head attention
     guard
       let commandBuffer = multiHeadAttention.forward(
@@ -1123,6 +1136,11 @@ private func mfa_attention_forward_quantized_multihead_internal(
       print("ERROR: Multi-head attention execution failed: \(error)")
       return 5 // MFA_ERROR_EXECUTION_FAILED
     }
+
+    // 🔍 DEBUG: Check output buffer contents after MultiHeadAttention
+    print("🔍 DEBUG AFTER MHA:")
+    let outPtr = outBuffer.contents().bindMemory(to: Float.self, capacity: 8)
+    print("  Output[0:8]: \(Array(UnsafeBufferPointer(start: outPtr, count: 8)))")
 
     print("✅ REAL Multi-Head Attention completed successfully")
     return 0 // MFA_SUCCESS
@@ -1208,6 +1226,11 @@ private func dequantizeBuffer(
   var scale = params.scale
   var zeroPoint = params.zeroPoint
   var elementCountUInt = UInt32(elementCount)
+
+  // 🔍 DEBUG: Log dequantization parameters
+  print("🔍 DEQUANT DEBUG: scale=\(scale), zeroPoint=\(zeroPoint), elementCount=\(elementCount)")
+  print("    Precision: \(params.precision)")
+
   encoder.setBytes(&scale, length: MemoryLayout<Float>.size, index: 2)
   encoder.setBytes(&zeroPoint, length: MemoryLayout<Int32>.size, index: 3)
   encoder.setBytes(&elementCountUInt, length: MemoryLayout<UInt32>.size, index: 4)
