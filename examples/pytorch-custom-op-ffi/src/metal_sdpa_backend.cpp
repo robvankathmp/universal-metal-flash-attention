@@ -9,7 +9,7 @@
 namespace metal_sdpa {
 
 // Static member initialization
-mfa_context_t MetalSDPABackend::MetalSDPABackend::swift_context_ = nullptr;
+mfa_context_t MetalSDPABackend::swift_context_ = nullptr;
 bool MetalSDPABackend::is_initialized_ = false;
 std::mutex MetalSDPABackend::init_mutex_;
 
@@ -44,7 +44,7 @@ void MetalSDPABackend::cleanup() {
     }
 }
 
-mfa_precision_t MetalSDPABackend::MetalSDPABackend::torch_dtype_to_mfa_dtype(torch::ScalarType dtype) {
+mfa_precision_t MetalSDPABackend::torch_dtype_to_mfa_dtype(torch::ScalarType dtype) {
     switch (dtype) {
         case torch::kFloat16: return MFA_PRECISION_FP16;
         case torch::kFloat32: return MFA_PRECISION_FP32;
@@ -325,7 +325,6 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention(
 
     // Get query precision from tensor dtype
     mfa_precision_t q_precision = MetalSDPABackend::torch_dtype_to_mfa_dtype(q_cpu.scalar_type());
-    mfa_precision_t output_precision = q_precision;
 
     // Calculate softmax scale
     float softmax_scale = scale ? static_cast<float>(*scale) : (1.0f / std::sqrt(static_cast<float>(head_dim)));
@@ -372,9 +371,6 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention(
     // Create MFA buffers
     mfa_buffer_t q_buffer, k_buffer, v_buffer, out_buffer;
 
-    size_t q_bytes = q_cpu.numel() * q_cpu.element_size();
-    size_t k_bytes = k_cpu.numel() * k_cpu.element_size();
-    size_t v_bytes = v_cpu.numel() * v_cpu.element_size();
     size_t out_bytes = output.numel() * output.element_size();
 
     mfa_error_t result;
@@ -461,13 +457,13 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention(
 }
 
 
-torch::Tensor quantized_scaled_dot_product_attention_with_config(
+torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention_with_config(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
     const QuantizationConfig& config
 ) {
-    MetalSDPABackend::ensure_initialized();
+    ensure_initialized();
 
     // Convert all tensors to CPU and contiguous
     auto q_cpu = MetalSDPABackend::ensure_contiguous_cpu(query);

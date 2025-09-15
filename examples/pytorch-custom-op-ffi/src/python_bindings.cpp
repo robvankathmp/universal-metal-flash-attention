@@ -47,7 +47,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     // Configurable Quantized SDPA call with output precision control
     m.def("quantized_scaled_dot_product_attention_with_config",
-          &metal_sdpa::quantized_scaled_dot_product_attention_with_config,
+          &metal_sdpa::MetalSDPABackend::quantized_scaled_dot_product_attention_with_config,
           "Direct call to Metal Flash Attention Quantized SDPA with configurable output precision",
           py::arg("query"),
           py::arg("key"),
