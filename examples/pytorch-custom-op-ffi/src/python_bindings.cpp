@@ -45,6 +45,31 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("is_causal") = false,
           py::arg("scale") = py::none());
 
+    // Configurable Quantized SDPA call with output precision control
+    m.def("quantized_scaled_dot_product_attention_with_config",
+          &metal_sdpa::quantized_scaled_dot_product_attention_with_config,
+          "Direct call to Metal Flash Attention Quantized SDPA with configurable output precision",
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("config"));
+
+    // QuantizationConfig class
+    py::class_<metal_sdpa::QuantizationConfig>(m, "QuantizationConfig")
+        .def(py::init<>())
+        .def_readwrite("precision", &metal_sdpa::QuantizationConfig::precision)
+        .def_readwrite("is_causal", &metal_sdpa::QuantizationConfig::is_causal)
+        .def_readwrite("scale", &metal_sdpa::QuantizationConfig::scale)
+        .def_readwrite("output_precision", &metal_sdpa::QuantizationConfig::output_precision)
+        .def_static("string_to_precision", &metal_sdpa::QuantizationConfig::string_to_precision)
+        .def_static("precision_to_string", &metal_sdpa::QuantizationConfig::precision_to_string);
+
+    // OutputPrecision enum
+    py::enum_<metal_sdpa::OutputPrecision>(m, "OutputPrecision")
+        .value("FP32", metal_sdpa::OutputPrecision::FP32)
+        .value("FP16", metal_sdpa::OutputPrecision::FP16)
+        .value("BF16", metal_sdpa::OutputPrecision::BF16);
+
     // Utility functions
     m.def("is_metal_available", []() { return mfa_is_device_supported(); },
           "Check if Metal is available on this device");

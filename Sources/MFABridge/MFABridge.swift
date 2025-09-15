@@ -1050,6 +1050,14 @@ private func mfa_attention_forward_quantized_multihead_internal(
       dispatchStrategy: .batched // Use batched dispatch for maximum parallelism
     )
 
+    // 🚨 GUARD: Validate MultiHeadAttention descriptor parameters
+    print("🔍 MHA DESCRIPTOR VALIDATION:")
+    print("   Query shape: batch=\(queryShape.batchSize), heads=\(queryShape.numHeads), seq=\(queryShape.sequenceLength), dim=\(queryShape.headDimension)")
+    print("   Key shape: batch=\(kvShape.batchSize), heads=\(kvShape.numHeads), seq=\(kvShape.sequenceLength), dim=\(kvShape.headDimension)")
+    print("   Value shape: batch=\(kvShape.batchSize), heads=\(kvShape.numHeads), seq=\(kvShape.sequenceLength), dim=\(kvShape.headDimension)")
+    print("   Base descriptor - row: \(baseDescriptor.matrixDimensions?.row ?? 0), col: \(baseDescriptor.matrixDimensions?.column ?? 0), head: \(baseDescriptor.matrixDimensions?.head ?? 0)")
+    print("   Broadcast mode: \(multiHeadDescriptor.broadcastMode), Dispatch: \(multiHeadDescriptor.dispatchStrategy)")
+
     // APPROACH: Use MultiHeadAttention but pre-process buffers for quantization
     // This gives us REAL parallel MHA with quantization support
 
@@ -1105,13 +1113,44 @@ private func mfa_attention_forward_quantized_multihead_internal(
     // 🔍 DEBUG: Check dequantized buffer contents before MultiHeadAttention
     print("🔍 DEBUG BEFORE MHA:")
     let qPtr = dequantizedQ.contents().bindMemory(to: Float16.self, capacity: 8)
-    print("  DequantQ[0:8]: \(Array(UnsafeBufferPointer(start: qPtr, count: 8)))")
+    let qValues = Array(UnsafeBufferPointer(start: qPtr, count: 8))
+    print("  DequantQ[0:8]: \(qValues)")
 
     let kPtr = dequantizedK.contents().bindMemory(to: Float16.self, capacity: 8)
-    print("  DequantK[0:8]: \(Array(UnsafeBufferPointer(start: kPtr, count: 8)))")
+    let kValues = Array(UnsafeBufferPointer(start: kPtr, count: 8))
+    print("  DequantK[0:8]: \(kValues)")
 
     let vPtr = dequantizedV.contents().bindMemory(to: Float16.self, capacity: 8)
-    print("  DequantV[0:8]: \(Array(UnsafeBufferPointer(start: vPtr, count: 8)))")
+    let vValues = Array(UnsafeBufferPointer(start: vPtr, count: 8))
+    print("  DequantV[0:8]: \(vValues)")
+
+    // 🚨 GUARD: Validate dequantized inputs are reasonable (breakpoint-style check)
+    let qMax = qValues.compactMap { Float($0) }.max() ?? 0
+    let kMax = kValues.compactMap { Float($0) }.max() ?? 0
+    let vMax = vValues.compactMap { Float($0) }.max() ?? 0
+
+    if qMax == 0 || kMax == 0 || vMax == 0 {
+      print("🚨 DEQUANTIZATION ERROR: Zero values detected in inputs!")
+      print("   Q_max=\(qMax), K_max=\(kMax), V_max=\(vMax)")
+      return 6 // Custom error for dequantization failure
+    }
+
+    print("✅ Dequantized inputs validated: Q_max=\(qMax), K_max=\(kMax), V_max=\(vMax)")
+
+    // 🚨 GUARD: Validate buffer sizes before Metal execution
+    print("🔍 BUFFER SIZE VALIDATION:")
+    print("   DequantQ buffer length: \(dequantizedQ.length) bytes")
+    print("   DequantK buffer length: \(dequantizedK.length) bytes")
+    print("   DequantV buffer length: \(dequantizedV.length) bytes")
+    print("   Output buffer length: \(outBuffer.length) bytes")
+
+    let expectedSize = Int(batchSize * numHeads * seqLenQ * UInt32(headDim)) * MemoryLayout<Float16>.size
+    print("   Expected buffer size: \(expectedSize) bytes")
+
+    if dequantizedQ.length != expectedSize || dequantizedK.length != expectedSize || dequantizedV.length != expectedSize {
+      print("🚨 BUFFER SIZE MISMATCH DETECTED!")
+      print("   This could cause Metal kernel crashes or incorrect results")
+    }
 
     // Execute REAL parallel multi-head attention
     guard
@@ -1124,23 +1163,59 @@ private func mfa_attention_forward_quantized_multihead_internal(
         descriptor: multiHeadDescriptor
       )
     else {
-      print("ERROR: Failed to create multi-head attention command buffer")
+      print("🚨 CRITICAL ERROR: Failed to create multi-head attention command buffer")
+      print("   This indicates Metal shader compilation or resource allocation failure")
       return 5 // MFA_ERROR_EXECUTION_FAILED
     }
+
+    print("✅ Multi-head attention command buffer created successfully")
 
     // Execute the parallel multi-head attention
     commandBuffer.commit()
     commandBuffer.waitUntilCompleted()
 
+    // 🚨 GUARD: Check for Metal command buffer errors (like breakpoint)
     if let error = commandBuffer.error {
-      print("ERROR: Multi-head attention execution failed: \(error)")
+      print("🚨 METAL ERROR DETECTED: \(error)")
+      print("   Error domain: \(error._domain)")
+      print("   Error code: \(error._code)")
+      print("   Error description: \(error.localizedDescription)")
       return 5 // MFA_ERROR_EXECUTION_FAILED
     }
 
-    // 🔍 DEBUG: Check output buffer contents after MultiHeadAttention
-    print("🔍 DEBUG AFTER MHA:")
-    let outPtr = outBuffer.contents().bindMemory(to: Float.self, capacity: 8)
-    print("  Output[0:8]: \(Array(UnsafeBufferPointer(start: outPtr, count: 8)))")
+    // 🔍 GUARD: Validate Metal execution completed successfully
+    print("✅ Metal command buffer completed successfully")
+    print("   Command buffer status: \(commandBuffer.status.rawValue)")
+
+    // 🔍 DEBUG: Check output buffer contents IMMEDIATELY after Metal execution
+    print("🔍 DEBUG AFTER MHA METAL EXECUTION:")
+    let outPtr = outBuffer.contents().bindMemory(to: Float16.self, capacity: 32)
+    let outputValues = Array(UnsafeBufferPointer<Float16>(start: outPtr, count: 32))
+    print("  Output[0:8]: \(outputValues[0..<8])")
+    print("  Output[8:16]: \(outputValues[8..<16])")
+    print("  Output range: min=\(outputValues.min() ?? 0), max=\(outputValues.max() ?? 0)")
+
+    // 🚨 GUARD: Check for all-zero or all-tiny outputs (precision issue detector)
+    let outputMax = outputValues.compactMap { Float($0) }.max() ?? 0
+    let outputMin = outputValues.compactMap { Float($0) }.min() ?? 0
+
+    if outputMax < 1e-6 {
+      print("🚨 PRECISION ISSUE DETECTED: Output values extremely small!")
+      print("   Max output: \(outputMax) (expected ~0.2)")
+      print("   This suggests Metal kernel precision loss or buffer corruption")
+    }
+
+    if outputMax == 0 && outputMin == 0 {
+      print("🚨 ALL ZEROS DETECTED: Metal kernel may not have executed properly")
+      print("   This suggests kernel execution failure or buffer alignment issues")
+    }
+
+    // 🔍 DEBUG: Check output buffer contents after MultiHeadAttention (LEGACY CODE)
+    print("🔍 DEBUG AFTER MHA (LEGACY):")
+    let outPtr2 = outBuffer.contents().bindMemory(to: Float.self, capacity: 8)
+    print("  Output[0:8]: \(Array(UnsafeBufferPointer<Float>(start: outPtr2, count: 8)))")
+
+    // Note: The comprehensive debug output is above in the Metal execution section
 
     print("✅ REAL Multi-Head Attention completed successfully")
     return 0 // MFA_SUCCESS
