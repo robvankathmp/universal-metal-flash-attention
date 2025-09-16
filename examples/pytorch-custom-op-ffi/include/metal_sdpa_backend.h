@@ -358,6 +358,37 @@ extern "C" {
         bool transpose_q, bool transpose_k, bool transpose_v, bool transpose_o
     );
 
+    // NEW: Runtime quantization functions - these take FP16/BF16/FP32 inputs and quantize at runtime
+    mfa_error_t mfa_attention_forward_quantized_direct(
+        mfa_context_t context,
+        mfa_buffer_t q, mfa_buffer_t k, mfa_buffer_t v, mfa_buffer_t out,
+        uint32_t batch_size, uint32_t seq_len_q, uint32_t seq_len_kv,
+        uint32_t num_heads, uint16_t head_dim, float softmax_scale,
+        bool causal,
+        float q_scale, int32_t q_zero_point,  // Not used in new API
+        float k_scale, int32_t k_zero_point,  // Not used in new API
+        float v_scale, int32_t v_zero_point,  // Not used in new API
+        int32_t q_precision,   // Input precision: 0=FP16, 1=BF16, 2=FP32
+        int32_t k_precision,   // Target quantization precision: 3=INT8, 4=INT4
+        int32_t v_precision,   // Quantization mode: 0=tensorWise, 2=blockWise
+        int32_t output_precision,
+        bool transpose_q, bool transpose_k, bool transpose_v, bool transpose_o
+    );
+
+    mfa_error_t mfa_multihead_attention_quantized_direct(
+        mfa_context_t context,
+        mfa_buffer_t q, mfa_buffer_t k, mfa_buffer_t v, mfa_buffer_t out,
+        uint32_t batch_size, uint32_t seq_len_q, uint32_t seq_len_kv,
+        uint32_t num_heads, uint16_t head_dim, float softmax_scale,
+        bool causal,
+        float q_scale, int32_t q_zero_point,  // Not used in new API
+        float k_scale, int32_t k_zero_point,  // Not used in new API
+        float v_scale, int32_t v_zero_point,  // Not used in new API
+        int32_t q_precision,   // Input precision: 0=FP16, 1=BF16, 2=FP32
+        int32_t k_precision,   // Target quantization precision: 3=INT8, 4=INT4
+        int32_t v_precision    // Quantization mode: 0=tensorWise, 2=blockWise
+    );
+
     bool mfa_is_device_supported(void);
     void mfa_get_version(int* major, int* minor, int* patch);
 }
