@@ -14,27 +14,31 @@ extern "C" {
  *
  * All functions return 0 on success, positive values on error.
  */
-typedef enum {
+enum {
     MFA_SUCCESS = 0,                        ///< Operation completed successfully
     MFA_ERROR_INVALID_ARGS = 1,            ///< Invalid arguments provided
     MFA_ERROR_MEMORY_ALLOCATION = 2,       ///< Memory allocation failed
     MFA_ERROR_DEVICE_NOT_SUPPORTED = 3,    ///< Metal device not available
     MFA_ERROR_KERNEL_COMPILATION = 4,      ///< Metal kernel compilation failed
     MFA_ERROR_EXECUTION_FAILED = 5         ///< Kernel execution failed
-} mfa_error_t;
+};
+
+typedef int mfa_error_t;
 
 /**
  * @brief Precision types for tensor operations
  *
  * Controls the precision used for different stages of computation.
  */
-typedef enum {
+enum {
     MFA_PRECISION_FP16 = 0,                ///< Half precision (16-bit)
     MFA_PRECISION_BF16 = 1,                ///< Brain float (16-bit)
     MFA_PRECISION_FP32 = 2,                ///< Single precision (32-bit)
     MFA_PRECISION_INT8 = 3,                ///< 8-bit integer quantized
     MFA_PRECISION_INT4 = 4                 ///< 4-bit integer quantized
-} mfa_precision_t;
+};
+
+typedef int mfa_precision_t;
 
 /**
  * @brief Opaque handle to MFA context (Metal device/command queue)

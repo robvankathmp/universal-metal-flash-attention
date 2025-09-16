@@ -7,7 +7,7 @@ final class MFAFFITests: XCTestCase {
     var context: UnsafeMutableRawPointer?
     let result = mfa_create_context(&context)
 
-    XCTAssertEqual(result, MFA_SUCCESS, "Context creation should succeed")
+    XCTAssertEqual(result, Int32(MFA_SUCCESS), "Context creation should succeed")
     XCTAssertNotNil(context, "Context should not be nil")
 
     if let context {
@@ -33,8 +33,8 @@ final class MFAFFITests: XCTestCase {
   }
 
   func testErrorStrings() throws {
-    let successStr = mfa_error_string(MFA_SUCCESS)
-    let invalidArgsStr = mfa_error_string(MFA_ERROR_INVALID_ARGS)
+    let successStr = mfa_error_string(Int32(MFA_SUCCESS))
+    let invalidArgsStr = mfa_error_string(Int32(MFA_ERROR_INVALID_ARGS))
 
     XCTAssertNotNil(successStr)
     XCTAssertNotNil(invalidArgsStr)
@@ -55,7 +55,7 @@ final class MFAFFITests: XCTestCase {
   func testBufferManagement() throws {
     var context: UnsafeMutableRawPointer?
     let contextResult = mfa_create_context(&context)
-    XCTAssertEqual(contextResult, MFA_SUCCESS)
+    XCTAssertEqual(contextResult, Int32(MFA_SUCCESS))
 
     defer {
       if let context {
@@ -71,7 +71,7 @@ final class MFAFFITests: XCTestCase {
     // Test buffer creation
     var buffer: UnsafeMutableRawPointer?
     let bufferResult = mfa_create_buffer(context, 1024, &buffer)
-    XCTAssertEqual(bufferResult, MFA_SUCCESS, "Buffer creation should succeed")
+    XCTAssertEqual(bufferResult, Int32(MFA_SUCCESS), "Buffer creation should succeed")
     XCTAssertNotNil(buffer, "Buffer should not be nil")
 
     // Test buffer contents access
@@ -85,7 +85,7 @@ final class MFAFFITests: XCTestCase {
   func testAttentionForward() throws {
     var context: UnsafeMutableRawPointer?
     let contextResult = mfa_create_context(&context)
-    XCTAssertEqual(contextResult, MFA_SUCCESS)
+    XCTAssertEqual(contextResult, Int32(MFA_SUCCESS))
 
     defer {
       if let context {
@@ -125,9 +125,9 @@ final class MFAFFITests: XCTestCase {
         context: context,
         seqLen: UInt32(testCase.seqLen),
         headDim: UInt16(testCase.headDim),
-        inputPrecision: mfa_precision_t(rawValue: 2), // FP32
-        intermediatePrecision: mfa_precision_t(rawValue: 2), // FP32
-        outputPrecision: mfa_precision_t(rawValue: 2), // FP32
+        inputPrecision: 2, // FP32
+        intermediatePrecision: 2, // FP32
+        outputPrecision: 2, // FP32
         expectedToPass: true,
         testName: "FP32-\(testCase.name)"
       )
@@ -152,9 +152,9 @@ final class MFAFFITests: XCTestCase {
         context: context,
         seqLen: UInt32(testCase.seqLen),
         headDim: UInt16(testCase.headDim),
-        inputPrecision: mfa_precision_t(rawValue: 0), // FP16
-        intermediatePrecision: mfa_precision_t(rawValue: 0), // FP16
-        outputPrecision: mfa_precision_t(rawValue: 0), // FP16
+        inputPrecision: 0, // FP16
+        intermediatePrecision: 0, // FP16
+        outputPrecision: 0, // FP16
         expectedToPass: false, // Known to have NaN issues
         testName: "FP16-\(testCase.name)"
       )
@@ -179,9 +179,9 @@ final class MFAFFITests: XCTestCase {
         context: context,
         seqLen: UInt32(testCase.seqLen),
         headDim: UInt16(testCase.headDim),
-        inputPrecision: mfa_precision_t(rawValue: 1), // BF16
-        intermediatePrecision: mfa_precision_t(rawValue: 1), // BF16
-        outputPrecision: mfa_precision_t(rawValue: 1), // BF16
+        inputPrecision: 1, // BF16
+        intermediatePrecision: 1, // BF16
+        outputPrecision: 1, // BF16
         expectedToPass: false, // Known to have NaN issues
         testName: "BF16-\(testCase.name)"
       )
@@ -209,9 +209,9 @@ final class MFAFFITests: XCTestCase {
         context: context,
         seqLen: UInt32(testCase.seqLen),
         headDim: UInt16(testCase.headDim),
-        inputPrecision: mfa_precision_t(rawValue: 2), // FP32
-        intermediatePrecision: mfa_precision_t(rawValue: 2), // FP32
-        outputPrecision: mfa_precision_t(rawValue: 2), // FP32
+        inputPrecision: 2, // FP32
+        intermediatePrecision: 2, // FP32
+        outputPrecision: 2, // FP32
         expectedToPass: true,
         testName: "Size-\(testCase.name)"
       )
@@ -239,7 +239,7 @@ final class MFAFFITests: XCTestCase {
         seqLen: seqLen,
         headDim: headDim,
         pattern: pattern,
-        precision: mfa_precision_t(rawValue: 2), // FP32
+        precision: 2, // FP32
         testName: "Pattern-\(pattern)"
       )
     }
@@ -273,9 +273,9 @@ final class MFAFFITests: XCTestCase {
         context: context,
         seqLen: seqLen,
         headDim: headDim,
-        inputPrecision: mfa_precision_t(rawValue: 2), // FP32
-        intermediatePrecision: mfa_precision_t(rawValue: 2), // FP32
-        outputPrecision: mfa_precision_t(rawValue: 2), // FP32
+        inputPrecision: 2, // FP32
+        intermediatePrecision: 2, // FP32
+        outputPrecision: 2, // FP32
         expectedToPass: true,
         testName: "Causal-\(causal)",
         causal: causal
@@ -297,9 +297,9 @@ final class MFAFFITests: XCTestCase {
         context: context,
         seqLen: seqLen,
         headDim: headDim,
-        inputPrecision: mfa_precision_t(rawValue: 2), // FP32
-        intermediatePrecision: mfa_precision_t(rawValue: 2), // FP32
-        outputPrecision: mfa_precision_t(rawValue: 2), // FP32
+        inputPrecision: 2, // FP32
+        intermediatePrecision: 2, // FP32
+        outputPrecision: 2, // FP32
         expectedToPass: true,
         testName: "Scale-\(scale)",
         softmaxScale: scale
@@ -323,9 +323,9 @@ final class MFAFFITests: XCTestCase {
         context: context,
         seqLen: UInt32(testCase.seqLen),
         headDim: UInt16(testCase.headDim),
-        inputPrecision: mfa_precision_t(rawValue: 2), // FP32
-        intermediatePrecision: mfa_precision_t(rawValue: 2), // FP32
-        outputPrecision: mfa_precision_t(rawValue: 2), // FP32
+        inputPrecision: 2, // FP32
+        intermediatePrecision: 2, // FP32
+        outputPrecision: 2, // FP32
         expectedToPass: true,
         testName: "Minimal-\(testCase.name)"
       )
@@ -338,9 +338,9 @@ final class MFAFFITests: XCTestCase {
     context: UnsafeMutableRawPointer,
     seqLen: UInt32,
     headDim: UInt16,
-    inputPrecision: mfa_precision_t,
-    intermediatePrecision: mfa_precision_t,
-    outputPrecision: mfa_precision_t,
+    inputPrecision: Int32,
+    intermediatePrecision: Int32,
+    outputPrecision: Int32,
     expectedToPass: Bool,
     testName: String,
     causal: Bool = false,
@@ -367,10 +367,10 @@ final class MFAFFITests: XCTestCase {
     let vResult = mfa_buffer_from_ptr(context, &vData, tensorSize, &vBuffer)
     let outResult = mfa_buffer_from_ptr(context, &outData, tensorSize, &outBuffer)
 
-    XCTAssertEqual(qResult, MFA_SUCCESS, "\(testName): Q buffer creation failed")
-    XCTAssertEqual(kResult, MFA_SUCCESS, "\(testName): K buffer creation failed")
-    XCTAssertEqual(vResult, MFA_SUCCESS, "\(testName): V buffer creation failed")
-    XCTAssertEqual(outResult, MFA_SUCCESS, "\(testName): Output buffer creation failed")
+    XCTAssertEqual(qResult, Int32(MFA_SUCCESS), "\(testName): Q buffer creation failed")
+    XCTAssertEqual(kResult, Int32(MFA_SUCCESS), "\(testName): K buffer creation failed")
+    XCTAssertEqual(vResult, Int32(MFA_SUCCESS), "\(testName): V buffer creation failed")
+    XCTAssertEqual(outResult, Int32(MFA_SUCCESS), "\(testName): Output buffer creation failed")
 
     defer {
       if let qBuffer { mfa_destroy_buffer(qBuffer) }
@@ -398,7 +398,7 @@ final class MFAFFITests: XCTestCase {
       false, false, false, false // no transposes
     )
 
-    XCTAssertEqual(attentionResult, MFA_SUCCESS, "\(testName): Attention computation failed")
+    XCTAssertEqual(attentionResult, Int32(MFA_SUCCESS), "\(testName): Attention computation failed")
 
     // Validate output quality
     let nanCount = outData.filter { $0.isNaN }.count
@@ -435,7 +435,7 @@ final class MFAFFITests: XCTestCase {
     seqLen: UInt32,
     headDim: UInt16,
     pattern: String,
-    precision: mfa_precision_t,
+    precision: Int32,
     testName: String
   ) throws {
 
@@ -492,10 +492,10 @@ final class MFAFFITests: XCTestCase {
     let vResult = mfa_buffer_from_ptr(context, &vData, tensorSize, &vBuffer)
     let outResult = mfa_buffer_from_ptr(context, &outData, tensorSize, &outBuffer)
 
-    XCTAssertEqual(qResult, MFA_SUCCESS)
-    XCTAssertEqual(kResult, MFA_SUCCESS)
-    XCTAssertEqual(vResult, MFA_SUCCESS)
-    XCTAssertEqual(outResult, MFA_SUCCESS)
+    XCTAssertEqual(qResult, Int32(MFA_SUCCESS))
+    XCTAssertEqual(kResult, Int32(MFA_SUCCESS))
+    XCTAssertEqual(vResult, Int32(MFA_SUCCESS))
+    XCTAssertEqual(outResult, Int32(MFA_SUCCESS))
 
     defer {
       if let qBuffer { mfa_destroy_buffer(qBuffer) }
@@ -514,7 +514,7 @@ final class MFAFFITests: XCTestCase {
       false, false, false, false
     )
 
-    XCTAssertEqual(attentionResult, MFA_SUCCESS, "\(testName): Attention computation failed")
+    XCTAssertEqual(attentionResult, Int32(MFA_SUCCESS), "\(testName): Attention computation failed")
 
     // Validate pattern-specific properties
     validatePatternResults(output: outData, pattern: pattern, testName: testName)

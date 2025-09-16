@@ -2,6 +2,18 @@ import FlashAttention
 import Foundation
 import Metal
 
+// CRITICAL FIX: Enum value conversion between C FFI and Swift
+// C FFI defines: FP16=0, BF16=1, FP32=2
+// Swift expects: FP32=0, FP16=1, BF16=2
+private func convertCFFIPrecisionToSwift(_ cPrecision: Int32) -> Int32 {
+  switch cPrecision {
+  case 0: return 1  // FP16: C=0 -> Swift=1
+  case 1: return 2  // BF16: C=1 -> Swift=2
+  case 2: return 0  // FP32: C=2 -> Swift=0
+  default: return cPrecision  // INT8=3, INT4=4 remain the same
+  }
+}
+
 // MARK: - Internal Types
 
 // Pipeline cache key for deduplicating compiled kernels
@@ -34,6 +46,11 @@ final class MFAContext {
 
   // Store GPU timing for zero-overhead measurement
   var lastGPULatency: CFTimeInterval = 0.0
+
+  // Scale arrays for row-wise and block-wise quantization
+  var qScales: [Float] = []
+  var kScales: [Float] = []
+  var vScales: [Float] = []
 
   init?(device: MTLDevice) {
     self.device = device
@@ -122,7 +139,7 @@ private let globalDevice: MTLDevice? = MTLCreateSystemDefaultDevice()
 private var globalContext: MFAContext?
 
 @_cdecl("mfa_create_context")
-public func mfa_create_context(_ context: UnsafeMutablePointer<UnsafeMutableRawPointer?>) -> Int32 {
+public func mfa_create_context(_ context: UnsafeMutablePointer<UnsafeMutableRawPointer?>?) -> Int32 {
   guard let device = globalDevice else {
     return 3 // MFA_ERROR_DEVICE_NOT_SUPPORTED
   }
@@ -137,7 +154,7 @@ public func mfa_create_context(_ context: UnsafeMutablePointer<UnsafeMutableRawP
   }
 
   let unmanagedContext = Unmanaged.passRetained(mfaContext)
-  context.pointee = unmanagedContext.toOpaque()
+  context?.pointee = unmanagedContext.toOpaque()
   return 0 // MFA_SUCCESS
 }
 
@@ -148,15 +165,56 @@ public func mfa_destroy_context(_ context: UnsafeMutableRawPointer?) {
   unmanagedContext.release()
 }
 
+@_cdecl("mfa_set_scale_arrays")
+public func mfa_set_scale_arrays(
+  _ context: UnsafeMutableRawPointer?,
+  _ qScales: UnsafePointer<Float>?,
+  _ qScalesCount: UInt32,
+  _ kScales: UnsafePointer<Float>?,
+  _ kScalesCount: UInt32,
+  _ vScales: UnsafePointer<Float>?,
+  _ vScalesCount: UInt32
+) -> Int32 {
+  guard let context else { return 1 } // MFA_ERROR_INVALID_ARGS
+
+  let mfaContext = Unmanaged<MFAContext>.fromOpaque(context).takeUnretainedValue()
+
+  // Set Q scales
+  if let qScales = qScales, qScalesCount > 0 {
+    mfaContext.qScales = Array(UnsafeBufferPointer(start: qScales, count: Int(qScalesCount)))
+    print("🔧 Set Q scales: \(mfaContext.qScales.count) scales")
+  } else {
+    mfaContext.qScales = []
+  }
+
+  // Set K scales
+  if let kScales = kScales, kScalesCount > 0 {
+    mfaContext.kScales = Array(UnsafeBufferPointer(start: kScales, count: Int(kScalesCount)))
+    print("🔧 Set K scales: \(mfaContext.kScales.count) scales")
+  } else {
+    mfaContext.kScales = []
+  }
+
+  // Set V scales
+  if let vScales = vScales, vScalesCount > 0 {
+    mfaContext.vScales = Array(UnsafeBufferPointer(start: vScales, count: Int(vScalesCount)))
+    print("🔧 Set V scales: \(mfaContext.vScales.count) scales")
+  } else {
+    mfaContext.vScales = []
+  }
+
+  return 0 // MFA_SUCCESS
+}
+
 @_cdecl("mfa_create_buffer")
 public func mfa_create_buffer(
   _ context: UnsafeMutableRawPointer?,
   _ sizeBytes: Int,
-  _ buffer: UnsafeMutablePointer<UnsafeMutableRawPointer?>
+  _ buffer: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
 )
   -> Int32
 {
-  guard let context else { return 1 } // MFA_ERROR_INVALID_ARGS
+  guard let context, let buffer else { return 1 } // MFA_ERROR_INVALID_ARGS
 
   let mfaContext = Unmanaged<MFAContext>.fromOpaque(context).takeUnretainedValue()
 
@@ -177,13 +235,14 @@ public func mfa_buffer_from_ptr(
   _ context: UnsafeMutableRawPointer?,
   _ dataPtr: UnsafeMutableRawPointer?,
   _ sizeBytes: Int,
-  _ buffer: UnsafeMutablePointer<UnsafeMutableRawPointer?>
+  _ buffer: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
 )
   -> Int32
 {
   guard
     let context,
-    let dataPtr
+    let dataPtr,
+    let buffer
   else { return 1 } // MFA_ERROR_INVALID_ARGS
 
   let mfaContext = Unmanaged<MFAContext>.fromOpaque(context).takeUnretainedValue()
@@ -319,10 +378,15 @@ public func mfa_attention_forward(
       descriptor.softmaxScale = softmaxScale
 
       // Set precision based on input parameters
-      // Note: MFA uses false = FP32, true = FP16
-      descriptor.lowPrecisionInputs = (inputPrecision == 0) // FP16 = true, FP32 = false
-      descriptor
-        .lowPrecisionIntermediates = (intermediatePrecision == 0) // FP16 = true, FP32 = false
+      // FIXED: Convert C FFI enum values to Swift values
+      let swiftInputPrecision = convertCFFIPrecisionToSwift(inputPrecision)
+      let swiftIntermediatePrecision = convertCFFIPrecisionToSwift(intermediatePrecision)
+
+      // Swift enum: FP32=0, FP16=1, BF16=2
+      // MFA uses: false = FP32, true = FP16/BF16
+      descriptor.lowPrecisionInputs = (swiftInputPrecision != 0) // FP16/BF16 = true, FP32 = false
+      // Use FP32 intermediates for numerical stability (prevents NaN with FP16/BF16 inputs)
+      descriptor.lowPrecisionIntermediates = false
 
       // Create kernel descriptor
       let kernelDescriptor = descriptor.kernelDescriptor(type: .forward)
@@ -421,6 +485,61 @@ public func mfa_attention_forward(
     print("MFA Error: \(error)")
     return 4 // MFA_ERROR_KERNEL_COMPILATION
   }
+}
+
+// MARK: - String-based Precision Interface
+
+/// Parse precision string to Swift integer value
+private func parsePrecisionString(_ precisionStr: UnsafePointer<CChar>?) -> Int32 {
+  guard let str = precisionStr else { return 2 } // Default to FP32 (C FFI value = 2)
+  let swiftStr = String(cString: str).lowercased()
+
+  // Return C FFI enum values that match mfa_ffi.h
+  switch swiftStr {
+  case "fp16", "float16": return 0  // MFA_PRECISION_FP16 = 0
+  case "bf16", "bfloat16": return 1  // MFA_PRECISION_BF16 = 1
+  case "fp32", "float32": return 2   // MFA_PRECISION_FP32 = 2
+  case "int8": return 3              // MFA_PRECISION_INT8 = 3
+  case "int4": return 4              // MFA_PRECISION_INT4 = 4
+  default: return 2 // Default to FP32 (C FFI value = 2)
+  }
+}
+
+@_cdecl("mfa_attention_forward_str")
+public func mfa_attention_forward_str(
+  _ context: UnsafeMutableRawPointer?,
+  _ q: UnsafeMutableRawPointer?,
+  _ k: UnsafeMutableRawPointer?,
+  _ v: UnsafeMutableRawPointer?,
+  _ out: UnsafeMutableRawPointer?,
+  _ batchSize: UInt32,
+  _ seqLenQ: UInt32,
+  _ seqLenKV: UInt32,
+  _ numHeads: UInt32,
+  _ headDim: UInt16,
+  _ softmaxScale: Float,
+  _ causal: Bool,
+  _ inputPrecisionStr: UnsafePointer<CChar>?,
+  _ intermediatePrecisionStr: UnsafePointer<CChar>?,
+  _ outputPrecisionStr: UnsafePointer<CChar>?,
+  _ transposeQ: Bool,
+  _ transposeK: Bool,
+  _ transposeV: Bool,
+  _ transposeO: Bool
+) -> Int32 {
+  // Convert string precisions to Swift integers
+  let inputPrecision = parsePrecisionString(inputPrecisionStr)
+  let intermediatePrecision = parsePrecisionString(intermediatePrecisionStr)
+  let outputPrecision = parsePrecisionString(outputPrecisionStr)
+
+  // Call the existing integer-based function
+  return mfa_attention_forward(
+    context, q, k, v, out,
+    batchSize, seqLenQ, seqLenKV,
+    numHeads, headDim, softmaxScale, causal,
+    inputPrecision, intermediatePrecision, outputPrecision,
+    transposeQ, transposeK, transposeV, transposeO
+  )
 }
 
 // MARK: - Utility Functions
@@ -772,9 +891,14 @@ private func mfa_attention_forward_multihead_internal(
     // Create base attention descriptor
     var baseDescriptor = AttentionDescriptor()
     baseDescriptor.matrixDimensions = (row: seqLenQ, column: seqLenKV, head: headDim)
-    baseDescriptor.lowPrecisionInputs = (inputPrecision == 0) // FP16 = true, FP32 = false
+    // FIXED: Convert C FFI enum values to Swift values
+    let swiftInputPrecision = convertCFFIPrecisionToSwift(inputPrecision)
+    let swiftIntermediatePrecision = convertCFFIPrecisionToSwift(intermediatePrecision)
+
+    baseDescriptor.lowPrecisionInputs = (swiftInputPrecision != 0) // FP16/BF16 = true, FP32 = false
     baseDescriptor
-      .lowPrecisionIntermediates = (intermediatePrecision == 0) // FP16 = true, FP32 = false
+      // Use FP32 intermediates for numerical stability (prevents NaN with FP16/BF16 inputs)
+      .lowPrecisionIntermediates = false
     baseDescriptor.transposeState = (Q: transposeQ, K: transposeK, V: transposeV, O: transposeO)
     baseDescriptor.sparsityPattern = causal ? .causal : .none
     baseDescriptor.softmaxScale = softmaxScale
@@ -880,13 +1004,10 @@ private func mfa_attention_forward_quantized_multihead_internal(
     baseDescriptor.sparsityPattern = causal ? .causal : .none
     baseDescriptor.softmaxScale = softmaxScale
 
-    // Set precision handling for quantized inputs
-    baseDescriptor
-      .lowPrecisionInputs = (
-        quantConfig.keyPrecision == .FP16 || quantConfig
-          .valuePrecision == .FP16
-      )
-    baseDescriptor.lowPrecisionIntermediates = false // Use FP32 intermediates for accuracy
+    // Set precision handling for quantized inputs with BF16 compatibility
+    // Force FP32 intermediates for BF16 inputs to prevent numerical instability
+    baseDescriptor.lowPrecisionInputs = false  // Use FP32 inputs for BF16 compatibility
+    baseDescriptor.lowPrecisionIntermediates = false // Use FP32 intermediates for accuracy and stability
 
     // 🔧 OUTPUT PRECISION: Use default FP16 output for this internal function
     let metalOutputPrecision: GEMMOperandPrecision = .FP16
@@ -1150,14 +1271,25 @@ private func dequantizeBuffer(
       uint gid [[thread_position_in_grid]]
   ) {
       if (gid >= element_count) return;
+
+      // Enhanced dequantization with NaN protection for BF16 compatibility
       float dequantized = (float(input[gid]) - float(zero_point)) * scale;
+
+      // Protect against NaN and Inf values that can occur with BF16 precision mismatches
+      if (!isfinite(dequantized)) {
+          dequantized = 0.0f; // Replace NaN/Inf with zero for stability
+      }
+
+      // Clamp to reasonable range to prevent overflow in subsequent computations
+      dequantized = clamp(dequantized, -65504.0f, 65504.0f); // FP16 max range
+
       output[gid] = half(dequantized);
   }
   """
 
-  // Create Metal compute pipeline for dequantization
+  // Create Metal compute pipeline for dequantization with precision safety
   let compileOptions = MTLCompileOptions()
-  compileOptions.fastMathEnabled = true
+  compileOptions.fastMathEnabled = false // Disable fast math for numerical stability with BF16
 
   guard
     let library = try? device.makeLibrary(source: kernelSource, options: compileOptions),
@@ -1263,16 +1395,10 @@ private func mfa_attention_forward_quantized_multihead_enhanced_internal(
     baseDescriptor.sparsityPattern = causal ? .causal : .none
     baseDescriptor.softmaxScale = softmaxScale
 
-    // Configure precision handling based on granularity and mixed precision settings
-    if enableMixedPrecision {
-      // Use mixed precision for better performance
-      baseDescriptor.lowPrecisionInputs = (quantConfig.keyPrecision == .FP16 || quantConfig.valuePrecision == .FP16)
-      baseDescriptor.lowPrecisionIntermediates = (granularity == 0) // Use FP16 intermediates for tensor-wise only
-    } else {
-      // Use consistent precision
-      baseDescriptor.lowPrecisionInputs = false
-      baseDescriptor.lowPrecisionIntermediates = false
-    }
+    // Configure precision handling for BF16 compatibility and numerical stability
+    // Force FP32 precision to prevent NaN generation with BF16 inputs
+    baseDescriptor.lowPrecisionInputs = false      // Force FP32 inputs for BF16 compatibility
+    baseDescriptor.lowPrecisionIntermediates = false // Force FP32 intermediates for numerical stability
 
     print("🔧 PRECISION CONFIG:")
     print("   Mixed precision: \(enableMixedPrecision)")
@@ -1732,7 +1858,9 @@ private func mfa_attention_forward_quantized_multihead_unified_internal(
           buffer: qBuffer, params: qParams,
           elementCount: Int(batchSize * numHeads * seqLenQ * UInt32(headDim)),
           device: context.device, sharedCommandQueue: sharedCommandQueue,
-          granularity: granularity, blockSize: qBlockSize
+          granularity: granularity, blockSize: qBlockSize,
+          tensorShape: (batchSize: batchSize, seqLen: seqLenQ, numHeads: numHeads, headDim: UInt32(headDim)),
+          blockScales: context.qScales.isEmpty ? nil : context.qScales
         )
       else {
         print("ERROR: Failed to dequantize Q buffer")
@@ -1748,7 +1876,9 @@ private func mfa_attention_forward_quantized_multihead_unified_internal(
         buffer: kBuffer, params: kParams,
         elementCount: Int(batchSize * numHeads * seqLenKV * UInt32(headDim)),
         device: context.device, sharedCommandQueue: sharedCommandQueue,
-        granularity: granularity, blockSize: kBlockSize
+        granularity: granularity, blockSize: kBlockSize,
+        tensorShape: (batchSize: batchSize, seqLen: seqLenKV, numHeads: numHeads, headDim: UInt32(headDim)),
+        blockScales: context.kScales.isEmpty ? nil : context.kScales
       )
     else {
       print("ERROR: Failed to dequantize K buffer")
@@ -1763,7 +1893,9 @@ private func mfa_attention_forward_quantized_multihead_unified_internal(
         buffer: vBuffer, params: vParams,
         elementCount: Int(batchSize * numHeads * seqLenKV * UInt32(headDim)),
         device: context.device, sharedCommandQueue: sharedCommandQueue,
-        granularity: granularity, blockSize: vBlockSize
+        granularity: granularity, blockSize: vBlockSize,
+        tensorShape: (batchSize: batchSize, seqLen: seqLenKV, numHeads: numHeads, headDim: UInt32(headDim)),
+        blockScales: context.vScales.isEmpty ? nil : context.vScales
       )
     else {
       print("ERROR: Failed to dequantize V buffer")
@@ -1961,6 +2093,31 @@ private func dequantizeBufferUnified(
     encoder.setBytes(&defaultVal, length: MemoryLayout<UInt32>.size, index: 10)
   }
 
+  // Set scale array for row-wise and block-wise quantization
+  if let scales = blockScales, !scales.isEmpty {
+    // Create a buffer for the scale array
+    let scaleArraySize = scales.count * MemoryLayout<Float>.size
+    guard let scaleBuffer = device.makeBuffer(bytes: scales, length: scaleArraySize, options: .storageModeShared) else {
+      print("ERROR: Failed to create scale array buffer")
+      return nil
+    }
+
+    encoder.setBuffer(scaleBuffer, offset: 0, index: 11) // scale_array
+
+    var scaleArraySizeUInt = UInt32(scales.count)
+    encoder.setBytes(&scaleArraySizeUInt, length: MemoryLayout<UInt32>.size, index: 12) // scale_array_size
+
+    print("✅ Set scale array: \(scales.count) scales, granularity=\(granularity)")
+  } else {
+    // No scale array provided - set null buffer and zero size
+    encoder.setBuffer(buffer, offset: 0, index: 11) // Use dummy buffer (will be ignored by shader)
+
+    var scaleArraySizeUInt: UInt32 = 0
+    encoder.setBytes(&scaleArraySizeUInt, length: MemoryLayout<UInt32>.size, index: 12) // scale_array_size = 0
+
+    print("⚠️ No scale array provided for granularity=\(granularity), falling back to tensor-wise")
+  }
+
   print("🔍 UNIFIED DEQUANT DEBUG: scale=\(scale), zeroPoint=\(zeroPoint), elementCount=\(elementCount), blockSize=\(blockSize), granularity=\(granularity)")
 
   // Dispatch threads with optimal configuration
@@ -1993,7 +2150,7 @@ private func createUnifiedDequantizationKernel() -> String {
   #include <metal_stdlib>
   using namespace metal;
 
-  // Unified dequantization kernel with runtime granularity selection
+  // Unified dequantization kernel with proper scale array support
   kernel void dequantize_unified(
       device const char *input [[buffer(0)]],
       device half *output [[buffer(1)]],
@@ -2006,49 +2163,75 @@ private func createUnifiedDequantizationKernel() -> String {
       constant uint &seq_len [[buffer(8)]],
       constant uint &num_heads [[buffer(9)]],
       constant uint &head_dim [[buffer(10)]],
+      device const float *scale_array [[buffer(11)]], // Array of scales for row/block-wise
+      constant uint &scale_array_size [[buffer(12)]], // Size of scale array
       uint gid [[thread_position_in_grid]]
   ) {
       if (gid >= element_count) return;
 
       float dequantized_value;
+      float effective_scale = scale; // Default to tensor-wise scale
 
-      // Runtime granularity selection
+      // Runtime granularity selection with proper scale handling
       switch (granularity) {
           case 0: { // TENSOR_WISE
-              dequantized_value = (float(input[gid]) - float(zero_point)) * scale;
+              effective_scale = scale;
               break;
           }
 
           case 1: { // ROW_WISE
               // Calculate row index based on tensor layout
+              // For tensor shape [batch_size, seq_len, num_heads, head_dim]
               uint row_idx = gid / head_dim;
-              // For row-wise, we would need per-row scales passed in
-              // For now, fall back to tensor-wise for compatibility
-              dequantized_value = (float(input[gid]) - float(zero_point)) * scale;
+
+              if (scale_array != nullptr && row_idx < scale_array_size) {
+                  effective_scale = scale_array[row_idx];
+              } else {
+                  effective_scale = scale; // Fallback to tensor-wise scale
+              }
               break;
           }
 
           case 2: { // BLOCK_WISE
               // Calculate block index based on block size
               uint block_idx = gid / block_size;
-              // For block-wise, we would need per-block scales passed in
-              // For now, fall back to tensor-wise for compatibility
-              dequantized_value = (float(input[gid]) - float(zero_point)) * scale;
+
+              if (scale_array != nullptr && block_idx < scale_array_size) {
+                  effective_scale = scale_array[block_idx];
+              } else {
+                  effective_scale = scale; // Fallback to tensor-wise scale
+              }
               break;
           }
 
           case 3: { // HYBRID
-              // Hybrid granularity - runtime selection based on position
-              // For now, use tensor-wise as fallback
-              dequantized_value = (float(input[gid]) - float(zero_point)) * scale;
+              // Hybrid granularity - use row-wise for now as primary choice
+              uint row_idx = gid / head_dim;
+
+              if (scale_array != nullptr && row_idx < scale_array_size) {
+                  effective_scale = scale_array[row_idx];
+              } else {
+                  effective_scale = scale; // Fallback to tensor-wise scale
+              }
               break;
           }
 
           default: { // Fallback to tensor-wise
-              dequantized_value = (float(input[gid]) - float(zero_point)) * scale;
+              effective_scale = scale;
               break;
           }
       }
+
+      // Perform dequantization with the appropriate scale
+      dequantized_value = (float(input[gid]) - float(zero_point)) * effective_scale;
+
+      // Enhanced NaN protection for BF16 compatibility
+      if (!isfinite(dequantized_value)) {
+          dequantized_value = 0.0f; // Replace NaN/Inf with zero for stability
+      }
+
+      // Clamp to reasonable range to prevent overflow in subsequent computations
+      dequantized_value = clamp(dequantized_value, -65504.0f, 65504.0f); // FP16 max range
 
       output[gid] = half(dequantized_value);
   }

@@ -28,7 +28,7 @@ final class MultiHeadFFITests: XCTestCase {
     super.setUp()
     // Create MFA context
     let result = mfa_create_context(&context)
-    XCTAssertEqual(result, MFA_SUCCESS, "Failed to create MFA context")
+    XCTAssertEqual(result, mfa_error_t(MFA_SUCCESS), "Failed to create MFA context")
     XCTAssertNotNil(context, "Context should not be nil")
   }
 
@@ -56,11 +56,11 @@ final class MultiHeadFFITests: XCTestCase {
     ]
 
     let precisionConfigs = [
-      (name: "FP32", input: mfa_precision_t(rawValue: 2), intermediate: mfa_precision_t(rawValue: 2), output: mfa_precision_t(rawValue: 2)),
-      (name: "FP16", input: mfa_precision_t(rawValue: 0), intermediate: mfa_precision_t(rawValue: 0), output: mfa_precision_t(rawValue: 0)),
-      (name: "BF16", input: mfa_precision_t(rawValue: 1), intermediate: mfa_precision_t(rawValue: 1), output: mfa_precision_t(rawValue: 1)),
-      (name: "Mixed FP32->FP16", input: mfa_precision_t(rawValue: 2), intermediate: mfa_precision_t(rawValue: 0), output: mfa_precision_t(rawValue: 0)),
-      (name: "Mixed BF16->FP32", input: mfa_precision_t(rawValue: 1), intermediate: mfa_precision_t(rawValue: 2), output: mfa_precision_t(rawValue: 2)),
+      (name: "FP32", input: mfa_precision_t(2), intermediate: mfa_precision_t(2), output: mfa_precision_t(2)),
+      (name: "FP16", input: mfa_precision_t(0), intermediate: mfa_precision_t(0), output: mfa_precision_t(0)),
+      (name: "BF16", input: mfa_precision_t(1), intermediate: mfa_precision_t(1), output: mfa_precision_t(1)),
+      (name: "Mixed FP32->FP16", input: mfa_precision_t(2), intermediate: mfa_precision_t(0), output: mfa_precision_t(0)),
+      (name: "Mixed BF16->FP32", input: mfa_precision_t(1), intermediate: mfa_precision_t(2), output: mfa_precision_t(2)),
     ]
 
     for config in testConfigurations {
@@ -136,8 +136,8 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
     }
 
-    guard result1 == MFA_SUCCESS && result2 == MFA_SUCCESS &&
-          result3 == MFA_SUCCESS && result4 == MFA_SUCCESS else {
+    guard result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
+          result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS) else {
       print("    ❌ Failed to create buffers")
       return false
     }
@@ -161,7 +161,7 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_destroy_buffer(oBuffer)
     }
 
-    guard result == MFA_SUCCESS else {
+    guard result == mfa_error_t(MFA_SUCCESS) else {
       print("    ❌ Execution failed with result: \(result)")
       return false
     }
@@ -215,9 +215,9 @@ final class MultiHeadFFITests: XCTestCase {
       numHeads: 24,
       seqLen: 4096,
       headDim: 64,
-      inputPrecision: mfa_precision_t(rawValue: 1), // BF16
-      intermediatePrecision: mfa_precision_t(rawValue: 1), // BF16
-      outputPrecision: mfa_precision_t(rawValue: 1), // BF16
+      inputPrecision: mfa_precision_t(1), // BF16
+      intermediatePrecision: mfa_precision_t(1), // BF16
+      outputPrecision: mfa_precision_t(1), // BF16
       precisionName: "BF16-Bug-Repro"
     )
 
@@ -228,9 +228,9 @@ final class MultiHeadFFITests: XCTestCase {
       numHeads: 16,
       seqLen: 1024,
       headDim: 88,
-      inputPrecision: mfa_precision_t(rawValue: 0), // FP16
-      intermediatePrecision: mfa_precision_t(rawValue: 0), // FP16
-      outputPrecision: mfa_precision_t(rawValue: 2), // FP32 output to catch precision loss
+      inputPrecision: mfa_precision_t(0), // FP16
+      intermediatePrecision: mfa_precision_t(0), // FP16
+      outputPrecision: mfa_precision_t(2), // FP32 output to catch precision loss
       precisionName: "FP16-Edge-Case"
     )
 
@@ -241,9 +241,9 @@ final class MultiHeadFFITests: XCTestCase {
       numHeads: 8,
       seqLen: 8192,
       headDim: 128,
-      inputPrecision: mfa_precision_t(rawValue: 1), // BF16
-      intermediatePrecision: mfa_precision_t(rawValue: 2), // FP32
-      outputPrecision: mfa_precision_t(rawValue: 0), // FP16
+      inputPrecision: mfa_precision_t(1), // BF16
+      intermediatePrecision: mfa_precision_t(2), // FP32
+      outputPrecision: mfa_precision_t(0), // FP16
       precisionName: "Large-Mixed-Precision"
     )
 
@@ -257,8 +257,8 @@ final class MultiHeadFFITests: XCTestCase {
 
     // Test quantized attention with different configurations
     let quantConfigs = [
-      (name: "INT8", qPrecision: mfa_precision_t(rawValue: 3), outputPrecision: mfa_precision_t(rawValue: 2)),
-      (name: "INT4", qPrecision: mfa_precision_t(rawValue: 4), outputPrecision: mfa_precision_t(rawValue: 2)),
+      (name: "INT8", qPrecision: mfa_precision_t(3), outputPrecision: mfa_precision_t(2)),
+      (name: "INT4", qPrecision: mfa_precision_t(4), outputPrecision: mfa_precision_t(2)),
     ]
 
     for config in quantConfigs {
@@ -319,8 +319,8 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
     }
 
-    guard result1 == MFA_SUCCESS && result2 == MFA_SUCCESS &&
-          result3 == MFA_SUCCESS && result4 == MFA_SUCCESS else {
+    guard result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
+          result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS) else {
       print("    ❌ Failed to create quantization buffers")
       return false
     }
@@ -331,7 +331,7 @@ final class MultiHeadFFITests: XCTestCase {
       batchSize, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(),
       false, // causal
-      mfa_precision_t(rawValue: 2), // FP32 input (queries stay in high precision)
+      mfa_precision_t(2), // FP32 input (queries stay in high precision)
       quantizationPrecision, // Quantized intermediate (affects K/V processing)
       outputPrecision,
       false, false, false, false
@@ -344,7 +344,7 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_destroy_buffer(oBuffer)
     }
 
-    guard result == MFA_SUCCESS else {
+    guard result == mfa_error_t(MFA_SUCCESS) else {
       print("    ❌ Quantized execution failed with result: \(result)")
       return false
     }
@@ -386,10 +386,10 @@ final class MultiHeadFFITests: XCTestCase {
     ]
 
     let precisionConfigs = [
-      (name: "FP32", input: mfa_precision_t(rawValue: 2), intermediate: mfa_precision_t(rawValue: 2), output: mfa_precision_t(rawValue: 2)),
-      (name: "FP16", input: mfa_precision_t(rawValue: 0), intermediate: mfa_precision_t(rawValue: 0), output: mfa_precision_t(rawValue: 0)),
-      (name: "BF16", input: mfa_precision_t(rawValue: 1), intermediate: mfa_precision_t(rawValue: 1), output: mfa_precision_t(rawValue: 1)),
-      (name: "Mixed FP16->FP32", input: mfa_precision_t(rawValue: 0), intermediate: mfa_precision_t(rawValue: 2), output: mfa_precision_t(rawValue: 2))
+      (name: "FP32", input: mfa_precision_t(2), intermediate: mfa_precision_t(2), output: mfa_precision_t(2)),
+      (name: "FP16", input: mfa_precision_t(0), intermediate: mfa_precision_t(0), output: mfa_precision_t(0)),
+      (name: "BF16", input: mfa_precision_t(1), intermediate: mfa_precision_t(1), output: mfa_precision_t(1)),
+      (name: "Mixed FP16->FP32", input: mfa_precision_t(0), intermediate: mfa_precision_t(2), output: mfa_precision_t(2))
     ]
 
     let headDims: [UInt16] = [64, 88, 128] // Common dimensions including FLUX's 88
@@ -506,8 +506,8 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
     }
 
-    guard result1 == MFA_SUCCESS && result2 == MFA_SUCCESS &&
-          result3 == MFA_SUCCESS && result4 == MFA_SUCCESS else {
+    guard result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
+          result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS) else {
       return false
     }
 
@@ -530,7 +530,7 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_destroy_buffer(oBuffer)
     }
 
-    guard result == MFA_SUCCESS else {
+    guard result == mfa_error_t(MFA_SUCCESS) else {
       return false
     }
 
@@ -750,8 +750,8 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
     }
 
-    guard result1 == MFA_SUCCESS && result2 == MFA_SUCCESS &&
-          result3 == MFA_SUCCESS && result4 == MFA_SUCCESS else {
+    guard result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
+          result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS) else {
       throw NSError(domain: "MFA", code: -1, userInfo: [NSLocalizedDescriptionKey: "Buffer creation failed"])
     }
 
@@ -760,7 +760,7 @@ final class MultiHeadFFITests: XCTestCase {
       batchSize, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(),
       false,
-      MFA_PRECISION_FP32, MFA_PRECISION_FP32, MFA_PRECISION_FP32,
+      mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
       false, false, false, false
     )
 
@@ -771,8 +771,8 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_destroy_buffer(oBuffer)
     }
 
-    guard result == MFA_SUCCESS else {
-      throw NSError(domain: "MFA", code: Int(result.rawValue), userInfo: [NSLocalizedDescriptionKey: "Attention execution failed"])
+    guard result == mfa_error_t(MFA_SUCCESS) else {
+      throw NSError(domain: "MFA", code: Int(result), userInfo: [NSLocalizedDescriptionKey: "Attention execution failed"])
     }
 
     return outputData
@@ -903,10 +903,10 @@ final class MultiHeadFFITests: XCTestCase {
         mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
       }
 
-      XCTAssertEqual(result1, MFA_SUCCESS)
-      XCTAssertEqual(result2, MFA_SUCCESS)
-      XCTAssertEqual(result3, MFA_SUCCESS)
-      XCTAssertEqual(result4, MFA_SUCCESS)
+      XCTAssertEqual(result1, mfa_error_t(MFA_SUCCESS))
+      XCTAssertEqual(result2, mfa_error_t(MFA_SUCCESS))
+      XCTAssertEqual(result3, mfa_error_t(MFA_SUCCESS))
+      XCTAssertEqual(result4, mfa_error_t(MFA_SUCCESS))
 
       // Execute MFA attention
       let result = mfa_attention_forward(
@@ -914,7 +914,7 @@ final class MultiHeadFFITests: XCTestCase {
         config.batchSize, config.seqLen, config.seqLen, config.numHeads, config.headDim,
         1.0 / Float(config.headDim).squareRoot(),
         false, // causal
-        MFA_PRECISION_FP32, MFA_PRECISION_FP32, MFA_PRECISION_FP32,
+        mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
         false, false, false, false
       )
 
@@ -925,7 +925,7 @@ final class MultiHeadFFITests: XCTestCase {
         mfa_destroy_buffer(oBuffer)
       }
 
-      XCTAssertEqual(result, MFA_SUCCESS, "MFA execution failed")
+      XCTAssertEqual(result, mfa_error_t(MFA_SUCCESS), "MFA execution failed")
 
       // Check for NaN/Inf
       XCTAssertFalse(outputData.contains { $0.isNaN }, "MFA output contains NaN")
@@ -1017,10 +1017,10 @@ final class MultiHeadFFITests: XCTestCase {
         mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
       }
 
-      XCTAssertEqual(result1, MFA_SUCCESS)
-      XCTAssertEqual(result2, MFA_SUCCESS)
-      XCTAssertEqual(result3, MFA_SUCCESS)
-      XCTAssertEqual(result4, MFA_SUCCESS)
+      XCTAssertEqual(result1, mfa_error_t(MFA_SUCCESS))
+      XCTAssertEqual(result2, mfa_error_t(MFA_SUCCESS))
+      XCTAssertEqual(result3, mfa_error_t(MFA_SUCCESS))
+      XCTAssertEqual(result4, mfa_error_t(MFA_SUCCESS))
 
       // Execute with transpose flags
       let result = mfa_attention_forward(
@@ -1028,7 +1028,7 @@ final class MultiHeadFFITests: XCTestCase {
         batchSize, seqLen, seqLen, numHeads, headDim,
         1.0 / Float(headDim).squareRoot(),
         false, // causal
-        MFA_PRECISION_FP32, MFA_PRECISION_FP32, MFA_PRECISION_FP32,
+        mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
         config.q, config.k, config.v, config.o
       )
 
@@ -1039,7 +1039,7 @@ final class MultiHeadFFITests: XCTestCase {
         mfa_destroy_buffer(oBuffer)
       }
 
-      let success = result == MFA_SUCCESS
+      let success = result == mfa_error_t(MFA_SUCCESS)
       let hasNaN = outputData.contains { $0.isNaN }
       let hasInf = outputData.contains { $0.isInfinite }
       let nonZeroCount = outputData.filter { abs($0) > 1e-8 }.count
@@ -1091,10 +1091,10 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
     }
 
-    XCTAssertEqual(result1, MFA_SUCCESS)
-    XCTAssertEqual(result2, MFA_SUCCESS)
-    XCTAssertEqual(result3, MFA_SUCCESS)
-    XCTAssertEqual(result4, MFA_SUCCESS)
+    XCTAssertEqual(result1, mfa_error_t(MFA_SUCCESS))
+    XCTAssertEqual(result2, mfa_error_t(MFA_SUCCESS))
+    XCTAssertEqual(result3, mfa_error_t(MFA_SUCCESS))
+    XCTAssertEqual(result4, mfa_error_t(MFA_SUCCESS))
 
     // Execute with causal masking
     let result = mfa_attention_forward(
@@ -1102,11 +1102,11 @@ final class MultiHeadFFITests: XCTestCase {
       1, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(),
       true, // causal masking enabled
-      MFA_PRECISION_FP32, MFA_PRECISION_FP32, MFA_PRECISION_FP32,
+      mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
       false, false, false, false
     )
 
-    XCTAssertEqual(result, MFA_SUCCESS, "Causal multi-head attention execution failed")
+    XCTAssertEqual(result, mfa_error_t(MFA_SUCCESS), "Causal multi-head attention execution failed")
 
     // Validate output
     XCTAssertFalse(outputData.contains { $0.isNaN }, "Causal output contains NaN values")
@@ -1155,7 +1155,7 @@ final class MultiHeadFFITests: XCTestCase {
       context, qBuffer, kBuffer, vBuffer, oBuffer,
       1, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(),
-      false, MFA_PRECISION_FP32, MFA_PRECISION_FP32, MFA_PRECISION_FP32,
+      false, mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
       false, false, false, false
     )
 
