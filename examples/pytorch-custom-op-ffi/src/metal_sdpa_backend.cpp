@@ -103,42 +103,6 @@ TensorLayoutInfo detect_tensor_layout(const torch::Tensor& tensor) {
     return info;
 }
 
-// Convert FLUX layout [B,H,S,D] to Metal layout [B,S,H,D]
-torch::Tensor convert_flux_to_metal_layout(const torch::Tensor& flux_tensor) {
-    if (flux_tensor.dim() != 4) {
-        throw std::runtime_error("convert_flux_to_metal_layout: Input must be 4D tensor");
-    }
-
-    // FLUX [B,H,S,D] -> Metal [B,S,H,D]
-    // This is equivalent to: permute(0, 2, 1, 3)
-    // MFA handles non-contiguous strides efficiently, no need for contiguous()
-    auto metal_tensor = flux_tensor.permute({0, 2, 1, 3});
-
-    printf("🔄 Converted FLUX->Metal: %s -> %s\n",
-           ("[" + std::to_string(flux_tensor.size(0)) + "," + std::to_string(flux_tensor.size(1)) + "," + std::to_string(flux_tensor.size(2)) + "," + std::to_string(flux_tensor.size(3)) + "]").c_str(),
-           ("[" + std::to_string(metal_tensor.size(0)) + "," + std::to_string(metal_tensor.size(1)) + "," + std::to_string(metal_tensor.size(2)) + "," + std::to_string(metal_tensor.size(3)) + "]").c_str());
-
-    return metal_tensor;
-}
-
-// Convert Metal layout [B,S,H,D] back to FLUX layout [B,H,S,D]
-torch::Tensor convert_metal_to_flux_layout(const torch::Tensor& metal_tensor) {
-    if (metal_tensor.dim() != 4) {
-        throw std::runtime_error("convert_metal_to_flux_layout: Input must be 4D tensor");
-    }
-
-    // Metal [B,S,H,D] -> FLUX [B,H,S,D]
-    // This is equivalent to: permute(0, 2, 1, 3)
-    // MFA handles non-contiguous strides efficiently, no need for contiguous()
-    auto flux_tensor = metal_tensor.permute({0, 2, 1, 3});
-
-    printf("🔄 Converted Metal->FLUX: %s -> %s\n",
-           ("[" + std::to_string(metal_tensor.size(0)) + "," + std::to_string(metal_tensor.size(1)) + "," + std::to_string(metal_tensor.size(2)) + "," + std::to_string(metal_tensor.size(3)) + "]").c_str(),
-           ("[" + std::to_string(flux_tensor.size(0)) + "," + std::to_string(flux_tensor.size(1)) + "," + std::to_string(flux_tensor.size(2)) + "," + std::to_string(flux_tensor.size(3)) + "]").c_str());
-
-    return flux_tensor;
-}
-
 // Helper function to convert ScalarType to string
 // ASSUMPTION: This function covers all commonly used PyTorch scalar types
 std::string scalar_type_to_string(torch::ScalarType type) {
@@ -160,6 +124,46 @@ std::string scalar_type_to_string(torch::ScalarType type) {
         case torch::ScalarType::QInt32: return "QInt32";
         default: return "Unknown";
     }
+}
+
+// Convert FLUX layout [B,H,S,D] to Metal layout [B,S,H,D]
+torch::Tensor convert_flux_to_metal_layout(const torch::Tensor& flux_tensor) {
+    if (flux_tensor.dim() != 4) {
+        throw std::runtime_error("convert_flux_to_metal_layout: Input must be 4D tensor");
+    }
+
+    // FLUX [B,H,S,D] -> Metal [B,S,H,D]
+    // This is equivalent to: permute(0, 2, 1, 3)
+    // MFA handles non-contiguous strides efficiently, no need for contiguous()
+    auto metal_tensor = flux_tensor.permute({0, 2, 1, 3});
+
+    printf("🔄 Converted FLUX->Metal: %s dtype=%s -> %s dtype=%s\n",
+           ("[" + std::to_string(flux_tensor.size(0)) + "," + std::to_string(flux_tensor.size(1)) + "," + std::to_string(flux_tensor.size(2)) + "," + std::to_string(flux_tensor.size(3)) + "]").c_str(),
+           scalar_type_to_string(flux_tensor.scalar_type()).c_str(),
+           ("[" + std::to_string(metal_tensor.size(0)) + "," + std::to_string(metal_tensor.size(1)) + "," + std::to_string(metal_tensor.size(2)) + "," + std::to_string(metal_tensor.size(3)) + "]").c_str(),
+           scalar_type_to_string(metal_tensor.scalar_type()).c_str());
+
+    return metal_tensor;
+}
+
+// Convert Metal layout [B,S,H,D] back to FLUX layout [B,H,S,D]
+torch::Tensor convert_metal_to_flux_layout(const torch::Tensor& metal_tensor) {
+    if (metal_tensor.dim() != 4) {
+        throw std::runtime_error("convert_metal_to_flux_layout: Input must be 4D tensor");
+    }
+
+    // Metal [B,S,H,D] -> FLUX [B,H,S,D]
+    // This is equivalent to: permute(0, 2, 1, 3)
+    // MFA handles non-contiguous strides efficiently, no need for contiguous()
+    auto flux_tensor = metal_tensor.permute({0, 2, 1, 3});
+
+    printf("🔄 Converted Metal->FLUX: %s dtype=%s -> %s dtype=%s\n",
+           ("[" + std::to_string(metal_tensor.size(0)) + "," + std::to_string(metal_tensor.size(1)) + "," + std::to_string(metal_tensor.size(2)) + "," + std::to_string(metal_tensor.size(3)) + "]").c_str(),
+           scalar_type_to_string(metal_tensor.scalar_type()).c_str(),
+           ("[" + std::to_string(flux_tensor.size(0)) + "," + std::to_string(flux_tensor.size(1)) + "," + std::to_string(flux_tensor.size(2)) + "," + std::to_string(flux_tensor.size(3)) + "]").c_str(),
+           scalar_type_to_string(flux_tensor.scalar_type()).c_str());
+
+    return flux_tensor;
 }
 
 // Helper functions for row-wise and block-wise quantization
@@ -930,7 +934,9 @@ torch::Tensor MetalSDPABackend::ensure_contiguous_cpu(const torch::Tensor& tenso
         return tensor;
     }
 
-    return tensor.to(torch::kCPU);
+    // Preserve dtype by using to() with device and dtype parameters
+    // This fixes bf16 value corruption when moving tensors to CPU
+    return tensor.to(torch::kCPU, tensor.scalar_type());
 }
 
 torch::Tensor MetalSDPABackend::call_swift_flash_attention(
@@ -1003,6 +1009,9 @@ torch::Tensor MetalSDPABackend::call_swift_flash_attention(
     // Create output tensor with same shape as query (after layout conversion)
     // Note: This is created after the layout conversion above
     auto output = torch::empty_like(q_cpu);
+    printf("📋 Created output tensor: shape=%s dtype=%s\n",
+           ("[" + std::to_string(output.size(0)) + "," + std::to_string(output.size(1)) + "," + std::to_string(output.size(2)) + "," + std::to_string(output.size(3)) + "]").c_str(),
+           scalar_type_to_string(output.scalar_type()).c_str());
 
     // Get precision as string for safer FFI handling
     std::string precision_str;
@@ -1028,6 +1037,21 @@ torch::Tensor MetalSDPABackend::call_swift_flash_attention(
     // Create MFA buffers from tensor data
     mfa_buffer_t q_buffer = nullptr, k_buffer = nullptr, v_buffer = nullptr, out_buffer = nullptr;
 
+    // Check if tensors are contiguous - Use stride-aware buffers for non-contiguous tensors
+    bool use_strided_buffers = false;
+    if (!q_cpu.is_contiguous()) {
+        printf("ℹ️  Q tensor is non-contiguous (strides-based view) - using stride-aware buffer\n");
+        use_strided_buffers = true;
+    }
+    if (!k_cpu.is_contiguous()) {
+        printf("ℹ️  K tensor is non-contiguous (strides-based view) - using stride-aware buffer\n");
+        use_strided_buffers = true;
+    }
+    if (!v_cpu.is_contiguous()) {
+        printf("ℹ️  V tensor is non-contiguous (strides-based view) - using stride-aware buffer\n");
+        use_strided_buffers = true;
+    }
+
     size_t q_bytes = q_cpu.numel() * q_cpu.element_size();
     size_t k_bytes = k_cpu.numel() * k_cpu.element_size();
     size_t v_bytes = v_cpu.numel() * v_cpu.element_size();
@@ -1035,36 +1059,89 @@ torch::Tensor MetalSDPABackend::call_swift_flash_attention(
 
     mfa_error_t result;
 
-    result = mfa_buffer_from_ptr(MetalSDPABackend::swift_context_, q_cpu.data_ptr(), q_bytes, &q_buffer);
-    if (result != MFA_SUCCESS) {
-        throw std::runtime_error("Failed to create query buffer");
+    if (use_strided_buffers) {
+        // Use stride-aware buffer creation for non-contiguous tensors
+        // Get shape and stride information from PyTorch tensors
+        auto q_sizes = q_cpu.sizes();
+        auto q_strides = q_cpu.strides();
+        auto k_sizes = k_cpu.sizes();
+        auto k_strides = k_cpu.strides();
+        auto v_sizes = v_cpu.sizes();
+        auto v_strides = v_cpu.strides();
+        auto out_sizes = output.sizes();
+        auto out_strides = output.strides();
+
+        // Convert to arrays for FFI
+        std::vector<int64_t> q_shape(q_sizes.begin(), q_sizes.end());
+        std::vector<int64_t> q_stride(q_strides.begin(), q_strides.end());
+        std::vector<int64_t> k_shape(k_sizes.begin(), k_sizes.end());
+        std::vector<int64_t> k_stride(k_strides.begin(), k_strides.end());
+        std::vector<int64_t> v_shape(v_sizes.begin(), v_sizes.end());
+        std::vector<int64_t> v_stride(v_strides.begin(), v_strides.end());
+        std::vector<int64_t> out_shape(out_sizes.begin(), out_sizes.end());
+        std::vector<int64_t> out_stride(out_strides.begin(), out_strides.end());
+
+        printf("📊 Using stride-aware buffers:\n");
+        printf("  Q shape: [%ld,%ld,%ld,%ld], strides: [%ld,%ld,%ld,%ld]\n",
+               q_shape[0], q_shape[1], q_shape[2], q_shape[3],
+               q_stride[0], q_stride[1], q_stride[2], q_stride[3]);
+
+        result = mfa_buffer_from_ptr_with_strides(MetalSDPABackend::swift_context_,
+                                                  q_cpu.data_ptr(), q_bytes,
+                                                  q_shape.data(), q_stride.data(), 4,
+                                                  &q_buffer);
+        if (result != MFA_SUCCESS) {
+            throw std::runtime_error("Failed to create strided query buffer");
+        }
+
+        result = mfa_buffer_from_ptr_with_strides(MetalSDPABackend::swift_context_,
+                                                  k_cpu.data_ptr(), k_bytes,
+                                                  k_shape.data(), k_stride.data(), 4,
+                                                  &k_buffer);
+        if (result != MFA_SUCCESS) {
+            throw std::runtime_error("Failed to create strided key buffer");
+        }
+
+        result = mfa_buffer_from_ptr_with_strides(MetalSDPABackend::swift_context_,
+                                                  v_cpu.data_ptr(), v_bytes,
+                                                  v_shape.data(), v_stride.data(), 4,
+                                                  &v_buffer);
+        if (result != MFA_SUCCESS) {
+            throw std::runtime_error("Failed to create strided value buffer");
+        }
+
+        result = mfa_buffer_from_ptr_with_strides(MetalSDPABackend::swift_context_,
+                                                  output.data_ptr(), out_bytes,
+                                                  out_shape.data(), out_stride.data(), 4,
+                                                  &out_buffer);
+        if (result != MFA_SUCCESS) {
+            throw std::runtime_error("Failed to create strided output buffer");
+        }
+    } else {
+        // Use regular buffer creation for contiguous tensors
+        result = mfa_buffer_from_ptr(MetalSDPABackend::swift_context_, q_cpu.data_ptr(), q_bytes, &q_buffer);
+        if (result != MFA_SUCCESS) {
+            throw std::runtime_error("Failed to create query buffer");
+        }
+
+        result = mfa_buffer_from_ptr(MetalSDPABackend::swift_context_, k_cpu.data_ptr(), k_bytes, &k_buffer);
+        if (result != MFA_SUCCESS) {
+            throw std::runtime_error("Failed to create key buffer");
+        }
+
+        result = mfa_buffer_from_ptr(MetalSDPABackend::swift_context_, v_cpu.data_ptr(), v_bytes, &v_buffer);
+        if (result != MFA_SUCCESS) {
+            throw std::runtime_error("Failed to create value buffer");
+        }
+
+        result = mfa_buffer_from_ptr(MetalSDPABackend::swift_context_, output.data_ptr(), out_bytes, &out_buffer);
+        if (result != MFA_SUCCESS) {
+            throw std::runtime_error("Failed to create output buffer");
+        }
     }
 
-    result = mfa_buffer_from_ptr(MetalSDPABackend::swift_context_, k_cpu.data_ptr(), k_bytes, &k_buffer);
-    if (result != MFA_SUCCESS) {
-        // Note: Don't destroy external memory buffers
-        // if (q_buffer) mfa_destroy_buffer(q_buffer);
-        throw std::runtime_error("Failed to create key buffer");
-    }
-
-    result = mfa_buffer_from_ptr(MetalSDPABackend::swift_context_, v_cpu.data_ptr(), v_bytes, &v_buffer);
-    if (result != MFA_SUCCESS) {
-        // Note: Don't destroy external memory buffers
-        // if (q_buffer) mfa_destroy_buffer(q_buffer);
-        // if (k_buffer) mfa_destroy_buffer(k_buffer);
-        throw std::runtime_error("Failed to create value buffer");
-    }
-
-    result = mfa_buffer_from_ptr(MetalSDPABackend::swift_context_, output.data_ptr(), out_bytes, &out_buffer);
-    if (result != MFA_SUCCESS) {
-        // Note: Don't destroy external memory buffers
-        // if (q_buffer) mfa_destroy_buffer(q_buffer);
-        // if (k_buffer) mfa_destroy_buffer(k_buffer);
-        // if (v_buffer) mfa_destroy_buffer(v_buffer);
-        throw std::runtime_error("Failed to create output buffer");
-    }
-
-    // Call MFA attention forward with string-based precision (safer FFI)
+    // Call MFA attention forward - now handles both contiguous and strided buffers
+    // The kernel will check for stride buffers internally and use appropriate indexing
     result = mfa_attention_forward_str(
         MetalSDPABackend::swift_context_,
         q_buffer, k_buffer, v_buffer, out_buffer,
@@ -1707,13 +1784,44 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention_unified(
         torch::Tensor final_output = output;
         if (input_was_flux_layout) {
             printf("🔄 Converting output back to FLUX layout...\n");
+            printf("   Output tensor before conversion: shape=%s dtype=%s\n",
+                   ("[" + std::to_string(output.size(0)) + "," + std::to_string(output.size(1)) + "," + std::to_string(output.size(2)) + "," + std::to_string(output.size(3)) + "]").c_str(),
+                   scalar_type_to_string(output.scalar_type()).c_str());
             final_output = convert_metal_to_flux_layout(output);
         }
 
+        // CRITICAL FIX: Ensure tensor data is copied before buffer cleanup to prevent use-after-free
+        // This is especially important for small tensors where PyTorch may not automatically copy
+        printf("🧹 Creating safe copy of output tensor before buffer cleanup...\n");
+        torch::Tensor safe_output = final_output.clone().contiguous();
+
+        // Convert to target device AFTER creating safe copy
+        torch::Tensor final_result = safe_output.to(query.device());
+
+        // Now safe to clean up MFA buffers since we have an independent copy
+        printf("🧹 Cleaning up MFA buffers after creating safe tensor copy...\n");
+        mfa_destroy_buffer(out_buffer);
+        mfa_destroy_buffer(v_buffer);
+        mfa_destroy_buffer(k_buffer);
+        mfa_destroy_buffer(q_buffer);
+        printf("✅ MFA buffer cleanup completed\n");
+
         fflush(stdout);
-        return final_output.to(query.device());
+        return final_result;
 
     } catch (...) {
+        // Ensure buffer cleanup even on exception
+        printf("🚨 Exception occurred, cleaning up MFA buffers...\n");
+        try {
+            mfa_destroy_buffer(out_buffer);
+            mfa_destroy_buffer(v_buffer);
+            mfa_destroy_buffer(k_buffer);
+            mfa_destroy_buffer(q_buffer);
+            printf("✅ Exception path: MFA buffer cleanup completed\n");
+        } catch (...) {
+            // Ignore cleanup exceptions to avoid masking original exception
+            printf("❌ Exception during buffer cleanup, but continuing with original exception\n");
+        }
         throw;
     }
 }

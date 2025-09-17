@@ -125,10 +125,21 @@ final class MFABuffer {
   let originalDataPtr: UnsafeMutableRawPointer? // Track original data for copy-back
   let dataSize: Int
 
-  init(buffer: MTLBuffer, originalDataPtr: UnsafeMutableRawPointer? = nil, dataSize: Int = 0) {
+  // Stride information for non-contiguous tensors
+  let shape: [Int64]?
+  let strides: [Int64]?
+  let ndim: UInt32
+  let isStrided: Bool
+
+  init(buffer: MTLBuffer, originalDataPtr: UnsafeMutableRawPointer? = nil, dataSize: Int = 0,
+       shape: [Int64]? = nil, strides: [Int64]? = nil, ndim: UInt32 = 0) {
     self.buffer = buffer
     self.originalDataPtr = originalDataPtr
     self.dataSize = dataSize
+    self.shape = shape
+    self.strides = strides
+    self.ndim = ndim
+    self.isStrided = (shape != nil && strides != nil && ndim > 0)
   }
 }
 
@@ -264,6 +275,59 @@ public func mfa_buffer_from_ptr(
     originalDataPtr: nil,
     dataSize: 0
   ) // No copy-back needed
+  let unmanagedBuffer = Unmanaged.passRetained(mfaBuffer)
+  buffer.pointee = unmanagedBuffer.toOpaque()
+
+  return 0 // MFA_SUCCESS
+}
+
+@_cdecl("mfa_buffer_from_ptr_with_strides")
+public func mfa_buffer_from_ptr_with_strides(
+  _ context: UnsafeMutableRawPointer?,
+  _ dataPtr: UnsafeMutableRawPointer?,
+  _ sizeBytes: Int,
+  _ shape: UnsafePointer<Int64>?,
+  _ strides: UnsafePointer<Int64>?,
+  _ ndim: UInt32,
+  _ buffer: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+)
+  -> Int32
+{
+  guard
+    let context,
+    let dataPtr,
+    let buffer,
+    let shape,
+    let strides,
+    ndim > 0
+  else { return 1 } // MFA_ERROR_INVALID_ARGS
+
+  let mfaContext = Unmanaged<MFAContext>.fromOpaque(context).takeUnretainedValue()
+
+  // Convert C arrays to Swift arrays
+  let shapeArray = Array(UnsafeBufferPointer(start: shape, count: Int(ndim)))
+  let stridesArray = Array(UnsafeBufferPointer(start: strides, count: Int(ndim)))
+
+  // Use zero-copy approach: wrap existing memory instead of copying
+  guard
+    let mtlBuffer = mfaContext.device.makeBuffer(
+      bytesNoCopy: dataPtr,
+      length: sizeBytes,
+      options: .storageModeShared,
+      deallocator: nil // Don't deallocate - memory is managed by Python/caller
+    )
+  else {
+    return 2 // MFA_ERROR_MEMORY_ALLOCATION
+  }
+
+  let mfaBuffer = MFABuffer(
+    buffer: mtlBuffer,
+    originalDataPtr: nil,
+    dataSize: 0,
+    shape: shapeArray,
+    strides: stridesArray,
+    ndim: ndim
+  )
   let unmanagedBuffer = Unmanaged.passRetained(mfaBuffer)
   buffer.pointee = unmanagedBuffer.toOpaque()
 
@@ -444,6 +508,58 @@ public func mfa_attention_forward(
     encoder.setBuffer(outBuffer.buffer, offset: 0, index: 3)
     encoder.setBuffer(lBuffer, offset: 0, index: 4) // L buffer (attention statistics)
     encoder.setBuffer(dBuffer, offset: 0, index: 5) // D buffer (attention statistics)
+
+    // Pass stride information if available (for non-contiguous tensor support)
+    var bufferIndex = 6
+
+    // Set stride buffers for Q, K, V, O if they exist
+    if qBuffer.isStrided, let qStrides = qBuffer.strides {
+      let strideBuffer = mfaContext.device.makeBuffer(
+        bytes: qStrides, length: qStrides.count * MemoryLayout<Int64>.size,
+        options: .storageModeShared
+      )
+      encoder.setBuffer(strideBuffer, offset: 0, index: bufferIndex)
+      bufferIndex += 1
+    } else {
+      encoder.setBuffer(nil, offset: 0, index: bufferIndex)
+      bufferIndex += 1
+    }
+
+    if kBuffer.isStrided, let kStrides = kBuffer.strides {
+      let strideBuffer = mfaContext.device.makeBuffer(
+        bytes: kStrides, length: kStrides.count * MemoryLayout<Int64>.size,
+        options: .storageModeShared
+      )
+      encoder.setBuffer(strideBuffer, offset: 0, index: bufferIndex)
+      bufferIndex += 1
+    } else {
+      encoder.setBuffer(nil, offset: 0, index: bufferIndex)
+      bufferIndex += 1
+    }
+
+    if vBuffer.isStrided, let vStrides = vBuffer.strides {
+      let strideBuffer = mfaContext.device.makeBuffer(
+        bytes: vStrides, length: vStrides.count * MemoryLayout<Int64>.size,
+        options: .storageModeShared
+      )
+      encoder.setBuffer(strideBuffer, offset: 0, index: bufferIndex)
+      bufferIndex += 1
+    } else {
+      encoder.setBuffer(nil, offset: 0, index: bufferIndex)
+      bufferIndex += 1
+    }
+
+    if outBuffer.isStrided, let outStrides = outBuffer.strides {
+      let strideBuffer = mfaContext.device.makeBuffer(
+        bytes: outStrides, length: outStrides.count * MemoryLayout<Int64>.size,
+        options: .storageModeShared
+      )
+      encoder.setBuffer(strideBuffer, offset: 0, index: bufferIndex)
+      bufferIndex += 1
+    } else {
+      encoder.setBuffer(nil, offset: 0, index: bufferIndex)
+      bufferIndex += 1
+    }
 
     // Buffers set: Q, K, V, O, L, D following MFA pattern
 

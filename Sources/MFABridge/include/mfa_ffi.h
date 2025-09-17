@@ -98,6 +98,31 @@ mfa_error_t mfa_buffer_from_ptr(
 );
 
 /**
+ * @brief Create a buffer from existing data pointer with stride information
+ *
+ * This function creates a buffer that includes tensor stride information,
+ * allowing Metal kernels to correctly access non-contiguous memory layouts.
+ *
+ * @param context The MFA context
+ * @param data_ptr Existing data to wrap
+ * @param size_bytes Size of the data in bytes
+ * @param shape Array of tensor dimensions (4 elements for 4D tensor)
+ * @param strides Array of tensor strides (4 elements for 4D tensor)
+ * @param ndim Number of dimensions (typically 4 for attention tensors)
+ * @param[out] buffer Pointer to store the created buffer handle
+ * @return MFA_SUCCESS on success, error code on failure
+ */
+mfa_error_t mfa_buffer_from_ptr_with_strides(
+    mfa_context_t context,
+    void* data_ptr,
+    size_t size_bytes,
+    const int64_t* shape,
+    const int64_t* strides,
+    uint32_t ndim,
+    mfa_buffer_t* buffer
+);
+
+/**
  * @brief Get the contents pointer of a buffer
  *
  * @param buffer The buffer to access
@@ -165,6 +190,7 @@ mfa_error_t mfa_attention_forward(
     bool transpose_v,
     bool transpose_o
 );
+
 
 mfa_error_t mfa_attention_backward(
     mfa_context_t context,

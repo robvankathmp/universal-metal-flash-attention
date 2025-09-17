@@ -1,0 +1,198 @@
+Metal SDPA backend initialized successfully
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [1,1,8,64] dtype=BFloat16 -> [1,8,1,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,1,8,64] dtype=BFloat16 -> [1,8,1,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,1,8,64] dtype=BFloat16 -> [1,8,1,64] dtype=BFloat16
+📊 Regular attention dimensions: batch=1, seq_q=8, seq_kv=8, heads=1, dim=64
+📋 Created output tensor: shape=[1,8,1,64] dtype=BFloat16
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [1,8,1,64] dtype=BFloat16 -> [1,1,8,64] dtype=BFloat16
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [1,8,64,64] dtype=Float -> [1,64,8,64] dtype=Float
+🔄 Converted FLUX->Metal: [1,8,64,64] dtype=Float -> [1,64,8,64] dtype=Float
+🔄 Converted FLUX->Metal: [1,8,64,64] dtype=Float -> [1,64,8,64] dtype=Float
+📊 Regular attention dimensions: batch=1, seq_q=64, seq_kv=64, heads=8, dim=64
+📋 Created output tensor: shape=[1,64,8,64] dtype=Float
+ℹ️  Q tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  K tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  V tensor is non-contiguous (strides-based view) - using stride-aware buffer
+📊 Using stride-aware buffers:
+  Q shape: [1,64,8,64], strides: [32768,64,4096,1]
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [1,64,8,64] dtype=Float -> [1,8,64,64] dtype=Float
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [1,8,64,64] dtype=BFloat16 -> [1,64,8,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,8,64,64] dtype=BFloat16 -> [1,64,8,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,8,64,64] dtype=BFloat16 -> [1,64,8,64] dtype=BFloat16
+📊 Regular attention dimensions: batch=1, seq_q=64, seq_kv=64, heads=8, dim=64
+📋 Created output tensor: shape=[1,64,8,64] dtype=BFloat16
+ℹ️  Q tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  K tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  V tensor is non-contiguous (strides-based view) - using stride-aware buffer
+📊 Using stride-aware buffers:
+  Q shape: [1,64,8,64], strides: [32768,64,4096,1]
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [1,64,8,64] dtype=BFloat16 -> [1,8,64,64] dtype=BFloat16
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [1,1,8,64] dtype=BFloat16 -> [1,8,1,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,1,8,64] dtype=BFloat16 -> [1,8,1,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,1,8,64] dtype=BFloat16 -> [1,8,1,64] dtype=BFloat16
+📊 Regular attention dimensions: batch=1, seq_q=8, seq_kv=8, heads=1, dim=64
+📋 Created output tensor: shape=[1,8,1,64] dtype=BFloat16
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [1,8,1,64] dtype=BFloat16 -> [1,1,8,64] dtype=BFloat16
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [1,1,32,32] dtype=Float -> [1,32,1,32] dtype=Float
+🔄 Converted FLUX->Metal: [1,1,32,32] dtype=Float -> [1,32,1,32] dtype=Float
+🔄 Converted FLUX->Metal: [1,1,32,32] dtype=Float -> [1,32,1,32] dtype=Float
+📊 Regular attention dimensions: batch=1, seq_q=32, seq_kv=32, heads=1, dim=32
+📋 Created output tensor: shape=[1,32,1,32] dtype=Float
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [1,32,1,32] dtype=Float -> [1,1,32,32] dtype=Float
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [1,1,32,32] dtype=BFloat16 -> [1,32,1,32] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,1,32,32] dtype=BFloat16 -> [1,32,1,32] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,1,32,32] dtype=BFloat16 -> [1,32,1,32] dtype=BFloat16
+📊 Regular attention dimensions: batch=1, seq_q=32, seq_kv=32, heads=1, dim=32
+📋 Created output tensor: shape=[1,32,1,32] dtype=BFloat16
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [1,32,1,32] dtype=BFloat16 -> [1,1,32,32] dtype=BFloat16
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [1,4,64,64] dtype=Float -> [1,64,4,64] dtype=Float
+🔄 Converted FLUX->Metal: [1,4,64,64] dtype=Float -> [1,64,4,64] dtype=Float
+🔄 Converted FLUX->Metal: [1,4,64,64] dtype=Float -> [1,64,4,64] dtype=Float
+📊 Regular attention dimensions: batch=1, seq_q=64, seq_kv=64, heads=4, dim=64
+📋 Created output tensor: shape=[1,64,4,64] dtype=Float
+ℹ️  Q tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  K tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  V tensor is non-contiguous (strides-based view) - using stride-aware buffer
+📊 Using stride-aware buffers:
+  Q shape: [1,64,4,64], strides: [16384,64,4096,1]
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [1,64,4,64] dtype=Float -> [1,4,64,64] dtype=Float
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [1,4,64,64] dtype=BFloat16 -> [1,64,4,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,4,64,64] dtype=BFloat16 -> [1,64,4,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [1,4,64,64] dtype=BFloat16 -> [1,64,4,64] dtype=BFloat16
+📊 Regular attention dimensions: batch=1, seq_q=64, seq_kv=64, heads=4, dim=64
+📋 Created output tensor: shape=[1,64,4,64] dtype=BFloat16
+ℹ️  Q tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  K tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  V tensor is non-contiguous (strides-based view) - using stride-aware buffer
+📊 Using stride-aware buffers:
+  Q shape: [1,64,4,64], strides: [16384,64,4096,1]
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [1,64,4,64] dtype=BFloat16 -> [1,4,64,64] dtype=BFloat16
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [2,8,128,64] dtype=Float -> [2,128,8,64] dtype=Float
+🔄 Converted FLUX->Metal: [2,8,128,64] dtype=Float -> [2,128,8,64] dtype=Float
+🔄 Converted FLUX->Metal: [2,8,128,64] dtype=Float -> [2,128,8,64] dtype=Float
+📊 Regular attention dimensions: batch=2, seq_q=128, seq_kv=128, heads=8, dim=64
+📋 Created output tensor: shape=[2,128,8,64] dtype=Float
+ℹ️  Q tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  K tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  V tensor is non-contiguous (strides-based view) - using stride-aware buffer
+📊 Using stride-aware buffers:
+  Q shape: [2,128,8,64], strides: [65536,64,8192,1]
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [2,128,8,64] dtype=Float -> [2,8,128,64] dtype=Float
+📋 Converting PyTorch layout [B,H,S,D] to Metal layout [B,S,H,D]
+🔄 Converted FLUX->Metal: [2,8,128,64] dtype=BFloat16 -> [2,128,8,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [2,8,128,64] dtype=BFloat16 -> [2,128,8,64] dtype=BFloat16
+🔄 Converted FLUX->Metal: [2,8,128,64] dtype=BFloat16 -> [2,128,8,64] dtype=BFloat16
+📊 Regular attention dimensions: batch=2, seq_q=128, seq_kv=128, heads=8, dim=64
+📋 Created output tensor: shape=[2,128,8,64] dtype=BFloat16
+ℹ️  Q tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  K tensor is non-contiguous (strides-based view) - using stride-aware buffer
+ℹ️  V tensor is non-contiguous (strides-based view) - using stride-aware buffer
+📊 Using stride-aware buffers:
+  Q shape: [2,128,8,64], strides: [65536,64,8192,1]
+🔄 Converting output from Metal layout [B,S,H,D] back to PyTorch layout [B,H,S,D]
+🔄 Converted Metal->FLUX: [2,128,8,64✓ metal_sdpa_extension imported successfully
+BF16 Precision Isolation Test Suite
+============================================================
+PyTorch version: 2.8.0
+BFloat16 available: True
+Metal extension available: True
+
+============================================================
+TEST: Test 1: BF16 Tensor Pass-through
+============================================================
+Input dtypes: q=torch.bfloat16, k=torch.bfloat16, v=torch.bfloat16
+Input shapes: q=torch.Size([1, 1, 8, 64]), k=torch.Size([1, 1, 8, 64]), v=torch.Size([1, 1, 8, 64])
+Output dtype: torch.bfloat16 (preserved: True)
+Output shape: torch.Size([1, 1, 8, 64]) (correct: True)
+Contains NaN: True
+Contains Inf: False
+✗ FAIL: BF16 tensor pass-through failed
+
+============================================================
+TEST: Test 2: BF16 vs FP32 Attention Computation
+============================================================
+FP32 input range: [-0.4139, 0.4086]
+BF16 input range: [-0.4141, 0.4082]
+FP32 output valid: True
+BF16 output valid: False
+FP32 output range: [-4.1239, 4.6977]
+BF16 output range: [nan, nan]
+Max absolute difference: nan
+Max relative difference: nan
+Mean absolute difference: nan
+✗ FAIL: BF16 vs FP32 comparison failed (abs_diff=nan, rel_diff=nan)
+
+============================================================
+TEST: Test 3: BF16 Dtype Preservation Through FFI
+============================================================
+Input dtypes correct: True
+Q dtype: torch.bfloat16
+K dtype: torch.bfloat16
+V dtype: torch.bfloat16
+Output dtype: torch.bfloat16
+Output dtype correct: True
+Output values reasonable: False
+Output range: [nan, nan]
+✗ FAIL: BF16 dtype preservation failed
+
+============================================================
+TEST: Test 4: BF16 vs FP32 Numerical Analysis
+============================================================
+
+Testing config: batch=1, heads=1, seq_len=32, head_dim=32
+  Max absolute error: nan
+  Mean absolute error: nan
+  Std absolute error: nan
+  Max relative error: nan
+  Mean relative error: nan
+  Mean bias: nan
+  ✗ Config result: abs_err_ok=False, rel_err_ok=False, bias_ok=False
+
+Testing config: batch=1, heads=4, seq_len=64, head_dim=64
+  Max absolute error: nan
+  Mean absolute error: nan
+  Std absolute error: nan
+  Max relative error: nan
+  Mean relative error: nan
+  Mean bias: nan
+  ✗ Config result: abs_err_ok=False, rel_err_ok=False, bias_ok=False
+
+Testing config: batch=2, heads=8, seq_len=128, head_dim=64
+  Max absolute error: nan
+  Mean absolute error: nan
+  Std absolute error: nan
+  Max relative error: nan
+  Mean relative error: nan
+  Mean bias: nan
+  ✗ Config result: abs_err_ok=False, rel_err_ok=False, bias_ok=False
+✗ FAIL: Numerical differences exceed acceptable thresholds
+
+============================================================
+TEST SUMMARY
+============================================================
+Tests passed: 0/4
+✗ SOME TESTS FAILED - BF16 handling has issues that need investigation
+
+Recommendations:
+1. Check the failed tests above for specific error messages
+2. Run test_bf16_ffi_conversion.py for deeper FFI boundary analysis
+3. Examine the Metal kernel implementations for bf16 support
+4. Check if bf16 tensors are being inadvertently converted to other types

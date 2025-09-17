@@ -1,11 +1,14 @@
-#!/usr/bin/env python3
+#!/usr/bin/env /Users/kash/src/universal-metal-flash-attention/.venv/bin/python3
 """
-FLUX.1-Schnell MPS Benchmark with Metal Flash Attention
+FLUX.1-Schnell Comprehensive Metal SDPA Benchmark
 
-This example demonstrates the performance difference between:
-1. Standard PyTorch SDPA (F.scaled_dot_product_attention)
-2. Metal Flash Attention PyTorch Custom Op (with GLUON optimizations)
-3. Metal Flash Attention Python FFI drop-in wrapper
+This benchmark tests the performance of FLUX.1-Schnell with:
+1. PyTorch Vanilla SDPA (baseline)
+2. Metal UMFA with BF16 (vanilla Universal Metal Flash Attention)
+3. Metal UMFA with INT8 quantization
+4. Metal UMFA with INT4 quantization
+
+Tested at resolutions: 256x256, 512x512, 1024x1024
 
 Requirements:
     pip install diffusers torch transformers accelerate safetensors
@@ -13,50 +16,62 @@ Requirements:
 Usage:
     python flux_schnell_benchmark.py
 
-The script will run FLUX.1-Schnell text-to-image generation using each backend
-and compare performance, memory usage, and output quality.
+Outputs are saved to examples/flux/output/ with performance metrics.
 """
 
 import gc
-
-# Set up library path for Metal FFI library
+import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import Dict, Optional, Any, Tuple
 
-import numpy as np
 import psutil
 import torch
+import torch.nn.functional as F
 
-lib_path = "/Users/kash/src/universal-metal-flash-attention/.build/arm64-apple-macosx/release:/Users/kash/src/universal-metal-flash-attention/.build/arm64-apple-macosx/debug"
-if "DYLD_LIBRARY_PATH" in os.environ:
-    os.environ["DYLD_LIBRARY_PATH"] = lib_path + ":" + os.environ["DYLD_LIBRARY_PATH"]
-else:
-    os.environ["DYLD_LIBRARY_PATH"] = lib_path
+# Set up library paths for Metal FFI
+project_root = Path("/Users/kash/src/universal-metal-flash-attention")
+lib_path = f"{project_root}/.build/arm64-apple-macosx/release:{project_root}/.build/arm64-apple-macosx/debug"
+os.environ["DYLD_LIBRARY_PATH"] = lib_path + ":" + os.environ.get("DYLD_LIBRARY_PATH", "")
 
-# Add the pytorch-custom-op-ffi build directory to path (not just the root)
-sys.path.append(
-    str(
-        Path(__file__).parent
-        / "pytorch-custom-op-ffi"
-        / "build"
-        / "lib.macosx-15.0-arm64-cpython-312"
-    )
-)
+# Add the pytorch-custom-op-ffi to path
+sys.path.insert(0, str(project_root / "examples" / "pytorch-custom-op-ffi"))
 
+# Ensure we're using the venv
+venv_site_packages = project_root / ".venv" / "lib" / "python3.13" / "site-packages"
+if venv_site_packages.exists():
+    sys.path.insert(0, str(venv_site_packages))
+
+# Try to import Metal SDPA extension
 try:
-    import metal_sdpa_extension
+    # First try to build the extension if needed
+    build_dir = project_root / "examples" / "pytorch-custom-op-ffi" / "build"
+    if build_dir.exists():
+        # Add build directory to path
+        import glob
+        lib_dirs = glob.glob(str(build_dir / "lib.*"))
+        if lib_dirs:
+            sys.path.insert(0, lib_dirs[0])
 
+    import metal_sdpa_extension
     METAL_PYTORCH_AVAILABLE = True
     print("✅ Metal PyTorch Custom Op available")
+
+    # Check for quantization support
+    HAS_QUANTIZATION = hasattr(metal_sdpa_extension, 'quantized_scaled_dot_product_attention')
+    if HAS_QUANTIZATION:
+        print("✅ Quantization support available")
+    else:
+        print("⚠️ Quantization support not available in current build")
+        print("   To enable: rebuild with quantization support")
 except ImportError as e:
     METAL_PYTORCH_AVAILABLE = False
+    HAS_QUANTIZATION = False
     print(f"❌ Metal PyTorch Custom Op not available: {e}")
-
-# Skip Python FFI for now to focus on PyTorch Custom Op
-METAL_PYTHON_FFI_AVAILABLE = False
-print("⏭️ Skipping Metal Python FFI for now")
+    print("   To build: cd examples/pytorch-custom-op-ffi && python setup.py build")
 
 try:
     from diffusers import FluxPipeline
@@ -70,213 +85,31 @@ except ImportError:
     )
 
 
-class MetalSDPAWrapper:
-    """Drop-in replacement for F.scaled_dot_product_attention using Metal FFI"""
+class BenchmarkConfig:
+    """Configuration for a benchmark run"""
+    def __init__(self, name: str, quantization: Optional[str] = None,
+                 use_metal: bool = False):
+        self.name = name
+        self.quantization = quantization  # None, 'int8', 'int4'
+        self.use_metal = use_metal
+        self.metrics: Dict[str, Any] = {}
 
-    def __init__(self, original_sdpa, quantized=False):
-        self.context = umfa.MFAContext() if METAL_PYTHON_FFI_AVAILABLE else None
-        self.original_sdpa = original_sdpa
-        self.quantized = quantized
-
-    def __call__(self, *args, **kwargs):
-        try:
-            # Extract arguments flexibly
-            if len(args) < 3:
-                return self.original_sdpa(*args, **kwargs)
-
-            query, key, value = args[0], args[1], args[2]
-            attn_mask = kwargs.get("attn_mask", args[3] if len(args) > 3 else None)
-            dropout_p = kwargs.get("dropout_p", args[4] if len(args) > 4 else 0.0)
-            is_causal = kwargs.get("is_causal", args[5] if len(args) > 5 else False)
-            scale = kwargs.get("scale", args[6] if len(args) > 6 else None)
-        except Exception as e:
-            print(
-                f"MetalSDPAWrapper argument extraction failed: {e}, args={len(args)}, kwargs={list(kwargs.keys())}"
-            )
-            return self.original_sdpa(*args, **kwargs)
-
-        if not METAL_PYTHON_FFI_AVAILABLE or query.device.type != "mps":
-            # Fallback to standard PyTorch SDPA
-            return self.original_sdpa(
-                query,
-                key,
-                value,
-                attn_mask=attn_mask,
-                dropout_p=dropout_p,
-                is_causal=is_causal,
-                scale=scale,
-            )
-
-        # Convert to numpy for Metal FFI, preserving bfloat16 precision
-        batch_size, num_heads, seq_len, head_dim = query.shape
-
-        # Determine precision based on tensor dtype
-        if query.dtype == torch.bfloat16:
-            precision = "bf16"
-
-            # Convert bfloat16 to float32 for numpy (numpy doesn't support bfloat16 directly)
-            def tensor_to_numpy(t):
-                return t.float().cpu().numpy()
-
-        elif query.dtype == torch.float16:
-            precision = "fp16"
-
-            def tensor_to_numpy(t):
-                return t.cpu().numpy().astype("float16")
-
-        else:
-            precision = "fp32"
-
-            def tensor_to_numpy(t):
-                return t.cpu().numpy().astype("float32")
-
-        if num_heads > 1:
-            # Metal Flash Attention currently supports single-head only
-            # Process each head separately
-            outputs = []
-            for head_idx in range(num_heads):
-                q_head = tensor_to_numpy(query[:, head_idx])
-                k_head = tensor_to_numpy(key[:, head_idx])
-                v_head = tensor_to_numpy(value[:, head_idx])
-
-                # Reshape to 2D for Metal FFI (assuming batch_size=1)
-                if batch_size == 1:
-                    q_head = q_head.squeeze(0)  # [seq_len, head_dim]
-                    k_head = k_head.squeeze(0)
-                    v_head = v_head.squeeze(0)
-
-                    if self.quantized and precision == "bf16":
-                        # Quantize K/V to INT8 for memory efficiency
-                        k_scale = np.abs(k_head).max() / 127.0
-                        v_scale = np.abs(v_head).max() / 127.0
-                        k_quantized = (k_head / k_scale).astype(np.int8)
-                        v_quantized = (v_head / v_scale).astype(np.int8)
-
-                        out_head = umfa.quantized_attention(
-                            q_head.astype(np.float32),
-                            k_quantized,
-                            v_quantized,
-                            context=self.context,
-                            causal=is_causal,
-                            softmax_scale=scale,
-                            query_precision="bf16",
-                            kv_precision="int8",
-                            output_precision="bf16",
-                            k_scale=k_scale,
-                            v_scale=v_scale,
-                        )
-                    else:
-                        out_head = umfa.flash_attention_forward(
-                            self.context,
-                            q_head,
-                            k_head,
-                            v_head,
-                            causal=is_causal,
-                            softmax_scale=scale,
-                            input_precision=precision,
-                            intermediate_precision=precision,
-                            output_precision=precision,
-                        )
-
-                    # Add batch dimension back and convert to correct dtype
-                    out_tensor = (
-                        torch.from_numpy(out_head).unsqueeze(0).to(query.device)
-                    )
-                    if query.dtype == torch.bfloat16:
-                        out_tensor = out_tensor.to(torch.bfloat16)
-                    outputs.append(out_tensor)
-                else:
-                    # Fallback for multi-batch
-                    return self.original_sdpa(
-                        query,
-                        key,
-                        value,
-                        attn_mask=attn_mask,
-                        dropout_p=dropout_p,
-                        is_causal=is_causal,
-                        scale=scale,
-                    )
-
-            # Stack heads back together
-            output = torch.stack(outputs, dim=1)
-            return output
-        else:
-            # Single head case
-            q_np = tensor_to_numpy(query.squeeze(1))  # [batch, seq_len, head_dim]
-            k_np = tensor_to_numpy(key.squeeze(1))
-            v_np = tensor_to_numpy(value.squeeze(1))
-
-            if batch_size == 1:
-                q_np = q_np.squeeze(0)  # [seq_len, head_dim]
-                k_np = k_np.squeeze(0)
-                v_np = v_np.squeeze(0)
-
-                if self.quantized and precision == "bf16":
-                    # Quantize K/V to INT8 for memory efficiency
-                    k_scale = np.abs(k_np).max() / 127.0
-                    v_scale = np.abs(v_np).max() / 127.0
-                    k_quantized = (k_np / k_scale).astype(np.int8)
-                    v_quantized = (v_np / v_scale).astype(np.int8)
-
-                    out_np = umfa.quantized_attention(
-                        q_np.astype(np.float32),
-                        k_quantized,
-                        v_quantized,
-                        context=self.context,
-                        causal=is_causal,
-                        softmax_scale=scale,
-                        query_precision="bf16",
-                        kv_precision="int8",
-                        output_precision="bf16",
-                        k_scale=k_scale,
-                        v_scale=v_scale,
-                    )
-                else:
-                    out_np = umfa.flash_attention_forward(
-                        self.context,
-                        q_np,
-                        k_np,
-                        v_np,
-                        causal=is_causal,
-                        softmax_scale=scale,
-                        input_precision=precision,
-                        intermediate_precision=precision,
-                        output_precision=precision,
-                    )
-
-                output = (
-                    torch.from_numpy(out_np).unsqueeze(0).unsqueeze(1).to(query.device)
-                )
-                if query.dtype == torch.bfloat16:
-                    output = output.to(torch.bfloat16)
-                return output
-            else:
-                # Fallback for multi-batch
-                return self.original_sdpa(*args, **kwargs)
-
-
-def get_memory_usage():
-    """Get current memory usage in MB"""
-    process = psutil.Process()
-    return process.memory_info().rss / 1024 / 1024
-
-
-def patch_attention_pytorch_custom_op():
-    """Patch PyTorch SDPA to use Metal Custom Op"""
+def create_metal_sdpa_wrapper(quantization_mode: Optional[str] = None):
+    """Create a Metal SDPA wrapper with specified quantization"""
     if not METAL_PYTORCH_AVAILABLE:
         return None
 
-    original_sdpa = torch.nn.functional.scaled_dot_product_attention
+    original_sdpa = F.scaled_dot_product_attention
 
     def metal_sdpa_wrapper(*args, **kwargs):
         try:
-            # Extract arguments flexibly to handle varying PyTorch versions
+            # Extract arguments
             if len(args) < 3:
                 return original_sdpa(*args, **kwargs)
 
             query, key, value = args[0], args[1], args[2]
 
-            # Handle remaining args/kwargs safely
+            # Handle optional arguments
             attn_mask = kwargs.get("attn_mask")
             if attn_mask is None and len(args) > 3:
                 attn_mask = args[3]
@@ -293,89 +126,96 @@ def patch_attention_pytorch_custom_op():
             if scale is None and len(args) > 6:
                 scale = args[6]
 
-            # Handle enable_gqa parameter (new in PyTorch 2.8+)
             enable_gqa = kwargs.get("enable_gqa", False)
         except Exception as e:
-            print(
-                f"Argument extraction failed: {e}, args={len(args)}, kwargs={list(kwargs.keys())}"
-            )
+            print(f"Argument extraction failed: {e}")
             return original_sdpa(*args, **kwargs)
 
-        # Only use Metal for MPS tensors with compatible shapes
-        if (
-            query.device.type == "mps"
-            and query.dim() == 4
-            and query.shape[0] == 1  # batch_size = 1
-            and query.shape[1] == 1  # single head
-            and attn_mask is None
-            and dropout_p == 0.0
-            and not enable_gqa
-        ):  # Disable for GQA
+        # Check if we can use Metal SDPA
+        if query.device.type != "mps" or not METAL_PYTORCH_AVAILABLE:
+            return original_sdpa(*args, **kwargs)
 
-            try:
-                # Keep 4D shape for Metal Custom Op (it actually expects 4D tensors)
-                result_4d = metal_sdpa_extension.metal_scaled_dot_product_attention(
-                    query,
-                    key,
-                    value,
+        try:
+            # Use quantized version if quantization mode is specified
+            if quantization_mode and HAS_QUANTIZATION:
+                # Use the simpler quantized_scaled_dot_product_attention function
+                # which takes a precision string directly
+                result = metal_sdpa_extension.quantized_scaled_dot_product_attention(
+                    query, key, value,
+                    precision=quantization_mode,  # 'int4' or 'int8'
+                    is_causal=is_causal,
+                    scale=scale if scale is not None else (1.0 / (query.shape[-1] ** 0.5))
+                )
+                return result
+            else:
+                # Use regular Metal SDPA without quantization
+                result = metal_sdpa_extension.metal_scaled_dot_product_attention(
+                    query, key, value,
                     attn_mask=attn_mask,
                     dropout_p=dropout_p,
                     is_causal=is_causal,
-                    scale=(
-                        scale if scale is not None else (1.0 / (query.shape[-1] ** 0.5))
-                    ),
-                    enable_gqa=enable_gqa,
+                    scale=scale if scale is not None else (1.0 / (query.shape[-1] ** 0.5)),
+                    enable_gqa=enable_gqa
                 )
+                return result
+        except Exception as e:
+            print(f"Metal SDPA failed: {e}, falling back to PyTorch")
+            return original_sdpa(*args, **kwargs)
 
-                return result_4d
-            except Exception as e:
-                print(f"Metal Custom Op failed, falling back to PyTorch: {e}")
-                return original_sdpa(*args, **kwargs)
-
-        return original_sdpa(*args, **kwargs)
-
-    torch.nn.functional.scaled_dot_product_attention = metal_sdpa_wrapper
-    return original_sdpa
+    return metal_sdpa_wrapper
 
 
-def patch_attention_python_ffi():
-    """Patch PyTorch SDPA to use Metal Python FFI"""
-    if not METAL_PYTHON_FFI_AVAILABLE:
+def get_memory_usage():
+    """Get current memory usage in MB"""
+    process = psutil.Process()
+    return process.memory_info().rss / 1024 / 1024
+
+
+def get_mps_memory_info():
+    """Get MPS memory info if available"""
+    if torch.backends.mps.is_available():
+        return {
+            "allocated": torch.mps.current_allocated_memory() / 1024 / 1024,
+            "reserved": torch.mps.driver_allocated_memory() / 1024 / 1024
+        }
+    return {"allocated": 0, "reserved": 0}
+
+
+def patch_attention(quantization_mode: Optional[str] = None):
+    """Patch PyTorch SDPA to use Metal with optional quantization"""
+    if not METAL_PYTORCH_AVAILABLE:
         return None
 
-    original_sdpa = torch.nn.functional.scaled_dot_product_attention
-    metal_wrapper = MetalSDPAWrapper(original_sdpa)
-
-    torch.nn.functional.scaled_dot_product_attention = metal_wrapper
-    return original_sdpa
-
-
-def patch_attention_quantized_ffi():
-    """Patch PyTorch SDPA to use Quantized Metal Python FFI"""
-    if not METAL_PYTHON_FFI_AVAILABLE:
-        return None
-
-    original_sdpa = torch.nn.functional.scaled_dot_product_attention
-    metal_wrapper = MetalSDPAWrapper(original_sdpa, quantized=True)
-
-    torch.nn.functional.scaled_dot_product_attention = metal_wrapper
-    return original_sdpa
+    wrapper = create_metal_sdpa_wrapper(quantization_mode)
+    if wrapper:
+        original = F.scaled_dot_product_attention
+        F.scaled_dot_product_attention = wrapper
+        return original
+    return None
 
 
 def restore_attention(original_sdpa):
     """Restore original PyTorch SDPA"""
     if original_sdpa is not None:
-        torch.nn.functional.scaled_dot_product_attention = original_sdpa
+        F.scaled_dot_product_attention = original_sdpa
 
 
-def benchmark_flux_schnell(backend_name, patch_func=None):
-    """Benchmark FLUX.1-Schnell with specified attention backend"""
+def benchmark_flux_configuration(config: BenchmarkConfig, resolution: Tuple[int, int],
+                                 prompt: str = None) -> Dict[str, Any]:
+    """Benchmark FLUX with a specific configuration and resolution"""
+
+    if prompt is None:
+        prompt = "A majestic castle on a hilltop at sunset, highly detailed digital art"
+
+    width, height = resolution
+    res_str = f"{width}x{height}"
+
     print(f"\n{'='*60}")
-    print(f"🚀 Testing FLUX.1-Schnell with {backend_name}")
+    print(f"🚀 Testing: {config.name} @ {res_str}")
     print(f"{'='*60}")
 
     if not DIFFUSERS_AVAILABLE:
-        print("❌ Diffusers not available - skipping benchmark")
+        print("❌ Diffusers not available")
         return None
 
     # Clear GPU memory
@@ -385,21 +225,22 @@ def benchmark_flux_schnell(backend_name, patch_func=None):
 
     initial_memory = get_memory_usage()
 
-    # Apply attention patch
+    # Apply attention patch if using Metal
     original_sdpa = None
-    if patch_func:
-        original_sdpa = patch_func()
+    if config.use_metal:
+        original_sdpa = patch_attention(config.quantization)
         if original_sdpa is None:
-            print(f"❌ Failed to patch attention for {backend_name}")
+            print(f"❌ Failed to patch attention for {config.name}")
             return None
 
     try:
-        # Load FLUX.1-Schnell pipeline
-        print("📥 Loading FLUX.1-Schnell pipeline...")
+        # Load FLUX.1-Schnell pipeline with FP32
+        print("📥 Loading FLUX.1-Schnell pipeline (FP32...)")
         load_start = time.time()
 
         pipe = FluxPipeline.from_pretrained(
-            "black-forest-labs/FLUX.1-schnell", torch_dtype=torch.bfloat16
+            "black-forest-labs/FLUX.1-schnell",
+            torch_dtype=torch.float32  # Always use FP32 base weights
         )
 
         if torch.backends.mps.is_available():
@@ -410,36 +251,78 @@ def benchmark_flux_schnell(backend_name, patch_func=None):
         load_memory = get_memory_usage() - initial_memory
 
         print(f"⏱️  Pipeline load time: {load_time:.2f}s")
-        print(f"💾 Memory used for loading: {load_memory:.1f} MB")
+        print(f"💾 Memory after loading: {load_memory:.1f} MB")
 
         # Generate image
-        prompt = "A futuristic cityscape with flying cars and neon lights, highly detailed digital art"
-        print(f"🎨 Generating image with prompt: '{prompt}'")
+        print(f"🎨 Generating @ {res_str}: '{prompt}'")
+
+        # Warm-up run (optional)
+        # pipe(prompt=prompt, num_inference_steps=1, height=256, width=256,
+        #      guidance_scale=0.0).images[0]
 
         generation_start = time.time()
+        step_times = []
+
+        # Custom callback to measure per-step timing
+        def step_callback(_pipe, _step_index, _timestep, callback_kwargs):
+            nonlocal step_times
+            step_times.append(time.time())
+            return callback_kwargs
 
         with torch.inference_mode():
             image = pipe(
                 prompt=prompt,
-                num_inference_steps=4,  # FLUX.1-Schnell is designed for 4 steps
-                height=1024,
-                width=1024,
-                guidance_scale=0.0,  # FLUX.1-Schnell doesn't use guidance
-                generator=torch.Generator().manual_seed(42),  # For reproducible results
+                num_inference_steps=4,  # FLUX.1-Schnell optimized for 4 steps
+                height=height,
+                width=width,
+                guidance_scale=0.0,  # No classifier-free guidance
+                generator=torch.Generator().manual_seed(42),  # Reproducible
+                callback_on_step_end=step_callback,
             ).images[0]
 
         generation_time = time.time() - generation_start
         peak_memory = get_memory_usage()
-        total_memory = peak_memory - initial_memory
+        peak_mps = get_mps_memory_info()
+
+        # Calculate per-step times
+        if len(step_times) > 1:
+            per_step_times = [step_times[i+1] - step_times[i]
+                             for i in range(len(step_times)-1)]
+            avg_step_time = sum(per_step_times) / len(per_step_times)
+        else:
+            avg_step_time = generation_time / 4
 
         # Save image
-        output_path = f"flux_schnell_{backend_name.lower().replace(' ', '_')}.png"
+        output_dir = Path("/Users/kash/src/universal-metal-flash-attention/examples/flux/output") / res_str
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = config.name.lower().replace(' ', '_')
+        output_path = output_dir / f"{filename}.png"
         image.save(output_path)
 
         print(f"✅ Generation completed!")
-        print(f"⏱️  Generation time: {generation_time:.2f}s")
-        print(f"💾 Peak memory usage: {total_memory:.1f} MB")
-        print(f"🖼️  Image saved as: {output_path}")
+        print(f"⏱️  Total time: {generation_time:.2f}s")
+        print(f"⏱️  Avg per step: {avg_step_time:.3f}s")
+        print(f"💾 Peak memory: {peak_memory:.1f} MB")
+        print(f"💾 MPS allocated: {peak_mps['allocated']:.1f} MB")
+        print(f"🖼️  Saved: {output_path}")
+
+        # Collect metrics
+        metrics = {
+            "config": config.name,
+            "resolution": res_str,
+            "width": width,
+            "height": height,
+            "quantization": config.quantization,
+            "load_time": load_time,
+            "generation_time": generation_time,
+            "avg_step_time": avg_step_time,
+            "load_memory_mb": load_memory,
+            "peak_memory_mb": peak_memory - initial_memory,
+            "mps_allocated_mb": peak_mps['allocated'],
+            "mps_reserved_mb": peak_mps['reserved'],
+            "output_path": str(output_path),
+        }
 
         # Clean up
         del pipe
@@ -447,17 +330,12 @@ def benchmark_flux_schnell(backend_name, patch_func=None):
             torch.mps.empty_cache()
         gc.collect()
 
-        return {
-            "backend": backend_name,
-            "load_time": load_time,
-            "generation_time": generation_time,
-            "load_memory_mb": load_memory,
-            "peak_memory_mb": total_memory,
-            "output_path": output_path,
-        }
+        return metrics
 
     except Exception as e:
-        print(f"❌ Error during {backend_name} benchmark: {e}")
+        print(f"❌ Error during {config.name} benchmark: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
     finally:
@@ -466,7 +344,7 @@ def benchmark_flux_schnell(backend_name, patch_func=None):
 
 
 def main():
-    print("🔥 FLUX.1-Schnell Metal Flash Attention Benchmark")
+    print("🔥 FLUX.1-Schnell Comprehensive Metal SDPA Benchmark")
     print("=" * 60)
 
     if not torch.backends.mps.is_available():
@@ -475,82 +353,90 @@ def main():
 
     print(f"✅ Running on MPS (Apple Silicon)")
     print(f"🔧 PyTorch version: {torch.__version__}")
+    print(f"📁 Output directory: examples/flux/output/")
 
-    results = []
+    # Define configurations
+    configurations = [
+        BenchmarkConfig("PyTorch Vanilla", quantization=None, use_metal=False),
+        BenchmarkConfig("Metal UMFA BF16", quantization=None, use_metal=True),
+    ]
 
-    # Benchmark 1: Standard PyTorch SDPA
-    print("\n" + "=" * 60)
-    print("📊 BENCHMARK 1: Standard PyTorch SDPA")
-    result1 = benchmark_flux_schnell("Standard PyTorch SDPA")
-    if result1:
-        results.append(result1)
+    # Add quantization configs if available
+    if HAS_QUANTIZATION:
+        configurations.extend([
+            BenchmarkConfig("Metal UMFA INT8", quantization='int8', use_metal=True),
+            BenchmarkConfig("Metal UMFA INT4", quantization='int4', use_metal=True),
+        ])
+    else:
+        print("⚠️ Quantization not available, skipping INT8/INT4 tests")
 
-    # Benchmark 2: Metal PyTorch Custom Op (with GLUON)
-    if METAL_PYTORCH_AVAILABLE:
-        print("\n" + "=" * 60)
-        print("📊 BENCHMARK 2: Metal PyTorch Custom Op (GLUON)")
-        result2 = benchmark_flux_schnell(
-            "Metal PyTorch Custom Op", patch_attention_pytorch_custom_op
-        )
-        if result2:
-            results.append(result2)
+    # Define resolutions to test
+    resolutions = [
+        (256, 256),
+        (512, 512),
+        (1024, 1024),
+    ]
 
-    # Benchmark 3: Metal Python FFI Drop-in (with GLUON)
-    if METAL_PYTHON_FFI_AVAILABLE:
-        print("\n" + "=" * 60)
-        print("📊 BENCHMARK 3: Metal Python FFI Drop-in (GLUON)")
-        result3 = benchmark_flux_schnell("Metal Python FFI", patch_attention_python_ffi)
-        if result3:
-            results.append(result3)
+    # Collect all results
+    all_results = []
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Benchmark 4: Quantized Metal FFI (INT8 K/V with GLUON)
-    if METAL_PYTHON_FFI_AVAILABLE:
-        print("\n" + "=" * 60)
-        print("📊 BENCHMARK 4: Quantized Metal FFI (INT8 K/V + GLUON)")
-        result4 = benchmark_flux_schnell(
-            "Quantized Metal FFI", patch_attention_quantized_ffi
-        )
-        if result4:
-            results.append(result4)
+    # Run benchmarks
+    for resolution in resolutions:
+        print(f"\n{'='*60}")
+        print(f"📐 Resolution: {resolution[0]}x{resolution[1]}")
+        print(f"{'='*60}")
 
-    # Print comparison
-    if len(results) > 1:
+        for config in configurations:
+            result = benchmark_flux_configuration(config, resolution)
+            if result:
+                all_results.append(result)
+
+    # Save results to JSON
+    if all_results:
+        results_file = Path(f"examples/flux/output/benchmark_results_{timestamp}.json")
+        with open(results_file, 'w') as f:
+            json.dump(all_results, f, indent=2, default=str)
+        print(f"\n📊 Results saved to: {results_file}")
+
+        # Print comparison table
         print("\n" + "=" * 60)
         print("📈 PERFORMANCE COMPARISON")
         print("=" * 60)
 
-        baseline = results[0]
-        print(f"{'Backend':<25} {'Gen Time':<12} {'Speedup':<10} {'Memory':<12}")
-        print("-" * 60)
+        # Group results by resolution
+        for resolution in resolutions:
+            res_str = f"{resolution[0]}x{resolution[1]}"
+            res_results = [r for r in all_results if r['resolution'] == res_str]
 
-        for result in results:
-            speedup = baseline["generation_time"] / result["generation_time"]
-            speedup_str = f"{speedup:.2f}x" if speedup != 1.0 else "baseline"
+            if not res_results:
+                continue
 
-            print(
-                f"{result['backend']:<25} {result['generation_time']:<8.2f}s    {speedup_str:<10} {result['peak_memory_mb']:<8.1f} MB"
-            )
+            print(f"\n🔍 Resolution: {res_str}")
+            print(f"{'Configuration':<20} {'Time (s)':<12} {'Speedup':<10} {'Memory (MB)':<12}")
+            print("-" * 54)
 
-        # Check for significant improvements
-        if len(results) > 1:
-            best_metal = min(
-                [r for r in results[1:]], key=lambda x: x["generation_time"]
-            )
-            improvement = (
-                (baseline["generation_time"] - best_metal["generation_time"])
-                / baseline["generation_time"]
-                * 100
-            )
+            # Find baseline (PyTorch Vanilla)
+            baseline = next((r for r in res_results if 'Vanilla' in r['config']), res_results[0])
 
-            print(f"\n🎯 Best Metal backend: {best_metal['backend']}")
-            print(
-                f"🚀 Performance improvement: {improvement:.1f}% faster than PyTorch SDPA"
-            )
-            print(f"💫 GLUON optimizations delivered real-world speedups!")
+            for result in res_results:
+                speedup = baseline['generation_time'] / result['generation_time']
+                speedup_str = f"{speedup:.2f}x" if speedup != 1.0 else "baseline"
 
-    print(
-        f"\n✨ Benchmark completed! Check the generated images for quality comparison."
-    )
+                print(
+                    f"{result['config']:<20} "
+                    f"{result['generation_time']:<8.2f}    "
+                    f"{speedup_str:<10} "
+                    f"{result['peak_memory_mb']:<8.1f}"
+                )
+
+        # Overall best performer
+        best_result = min(all_results, key=lambda x: x['generation_time'])
+        print(f"\n🏆 Best Overall: {best_result['config']} @ {best_result['resolution']}")
+        print(f"   Time: {best_result['generation_time']:.2f}s")
+        print(f"   Memory: {best_result['peak_memory_mb']:.1f} MB")
+
+    print("\n✨ Benchmark completed! Check examples/flux/output/ for generated images.")
 
 
 if __name__ == "__main__":
