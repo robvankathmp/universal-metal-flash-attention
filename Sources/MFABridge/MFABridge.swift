@@ -2,7 +2,6 @@ import FlashAttention
 import Foundation
 import Metal
 
-// CRITICAL FIX: Enum value conversion between C FFI and Swift
 // C FFI defines: FP16=0, BF16=1, FP32=2
 // Swift expects: FP32=0, FP16=1, BF16=2
 private func convertCFFIPrecisionToSwift(_ cPrecision: Int32) -> Int32 {
@@ -12,6 +11,41 @@ private func convertCFFIPrecisionToSwift(_ cPrecision: Int32) -> Int32 {
   case 2: return 0  // FP32: C=2 -> Swift=0
   default: return cPrecision  // INT8=3, INT4=4 remain the same
   }
+}
+
+private enum MaskType: Int32 {
+  case none = 0
+  case boolean = 1
+  case additive = 2
+}
+
+private enum MaskScalarType: Int32 {
+  case byte = 0
+  case fp16 = 1
+  case bf16 = 2
+  case fp32 = 3
+
+  var elementSize: Int {
+    switch self {
+    case .byte: 1
+    case .fp16, .bf16: 2
+    case .fp32: 4
+    }
+  }
+}
+
+fileprivate struct MaskArguments {
+  let pointer: UnsafeMutableRawPointer
+  let sizeBytes: Int
+  let shape: [Int64]
+  let strides: [Int64]
+  let ndim: UInt32
+  let type: MaskType
+  let scalarType: MaskScalarType
+}
+
+fileprivate struct PreparedMask {
+  let buffer: MTLBuffer
 }
 
 // MARK: - Internal Types
@@ -52,12 +86,257 @@ final class MFAContext {
   var kScales: [Float] = []
   var vScales: [Float] = []
 
+  // Mask preprocessing resources
+  private var maskPipelineState: MTLComputePipelineState?
+  private var maskOutputBuffer: MTLBuffer?
+  private var maskShapeBuffer: MTLBuffer?
+  private var maskStrideBuffer: MTLBuffer?
+
+  private static let maskKernelSource = """
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void mfa_prepare_mask(
+    device const uchar* mask_raw [[buffer(0)]],
+    device float* out_scores [[buffer(1)]],
+    constant uint &mask_type [[buffer(2)]],
+    constant uint &mask_scalar [[buffer(3)]],
+    constant uint4 &bhqk_shape [[buffer(4)]],
+    constant uint &element_count [[buffer(5)]],
+    constant uint &mask_dims [[buffer(6)]],
+    constant int64_t* mask_shape [[buffer(7)]],
+    constant int64_t* mask_strides [[buffer(8)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= element_count) {
+    return;
+  }
+
+  uint cols = bhqk_shape.w;
+  uint rows = bhqk_shape.z;
+  uint heads = bhqk_shape.y;
+  uint batches = bhqk_shape.x;
+
+  uint idx = gid;
+  uint col = idx % cols;
+  idx /= cols;
+  uint row = idx % rows;
+  idx /= rows;
+  uint head = idx % heads;
+  uint batch = idx / heads;
+
+  float mask_value = 0.0f;
+  if (mask_type != 0u && mask_raw != nullptr && mask_shape != nullptr && mask_strides != nullptr) {
+    if (mask_dims <= 4u) {
+      uint coords[4] = {batch, head, row, col};
+      int64_t linear_index = 0;
+      for (uint i = 0; i < mask_dims; ++i) {
+        uint coord_index = 4u - mask_dims + i;
+        uint coord = coords[coord_index];
+        int64_t dim = mask_shape[i];
+        if (dim == 1) {
+          coord = 0;
+        }
+        linear_index += int64_t(coord) * mask_strides[i];
+      }
+
+      switch (mask_type) {
+      case 1u: {
+        const device uchar* bool_ptr = mask_raw;
+        bool masked = bool_ptr[linear_index] != 0;
+        mask_value = masked ? -INFINITY : 0.0f;
+        break;
+      }
+      case 2u: {
+        switch (mask_scalar) {
+        case 3u: {
+          const device float* fp32_ptr = reinterpret_cast<const device float*>(mask_raw);
+          mask_value = fp32_ptr[linear_index];
+          break;
+        }
+        case 1u: {
+          const device half* fp16_ptr = reinterpret_cast<const device half*>(mask_raw);
+          mask_value = float(fp16_ptr[linear_index]);
+          break;
+        }
+        case 2u: {
+          const device ushort* bf16_ptr = reinterpret_cast<const device ushort*>(mask_raw);
+          ushort raw = bf16_ptr[linear_index];
+          uint32_t expanded = uint32_t(raw) << 16;
+          mask_value = as_type<float>(expanded);
+          break;
+        }
+        default:
+          mask_value = 0.0f;
+          break;
+        }
+        break;
+      }
+      default:
+        mask_value = 0.0f;
+        break;
+      }
+    } else {
+      mask_value = 0.0f;
+    }
+  }
+
+  out_scores[gid] = mask_value;
+}
+"""
+
   init?(device: MTLDevice) {
     self.device = device
     guard let queue = device.makeCommandQueue() else {
       return nil
     }
     commandQueue = queue
+  }
+
+  enum MaskPreparationError: Error {
+    case invalidMetadata
+    case pipelineCreationFailed
+    case bufferAllocationFailed
+    case commandEncodingFailed
+    case commandExecutionFailed
+  }
+
+  private func ensureMaskPipeline() throws -> MTLComputePipelineState {
+    if let pipeline = maskPipelineState {
+      return pipeline
+    }
+
+    do {
+      let library = try device.makeLibrary(source: Self.maskKernelSource, options: nil)
+      guard let function = library.makeFunction(name: "mfa_prepare_mask") else {
+        throw MaskPreparationError.pipelineCreationFailed
+      }
+      let pipeline = try device.makeComputePipelineState(function: function)
+      maskPipelineState = pipeline
+      return pipeline
+    } catch {
+      throw MaskPreparationError.pipelineCreationFailed
+    }
+  }
+
+  fileprivate func prepareMask(
+    arguments: MaskArguments?,
+    batchSize: UInt32,
+    numHeads: UInt32,
+    seqLenQ: UInt32,
+    seqLenKV: UInt32
+  ) throws -> PreparedMask? {
+    guard let arguments else {
+      return nil
+    }
+
+    guard !arguments.shape.isEmpty,
+          arguments.shape.count == arguments.strides.count,
+          arguments.shape.count == Int(arguments.ndim)
+    else {
+      throw MaskPreparationError.invalidMetadata
+    }
+
+    let totalElements = Int(batchSize) * Int(numHeads) * Int(seqLenQ) * Int(seqLenKV)
+    if totalElements == 0 {
+      return nil
+    }
+
+    guard
+      let maskInputBuffer = device.makeBuffer(
+        bytesNoCopy: arguments.pointer,
+        length: arguments.sizeBytes,
+        options: .storageModeShared,
+        deallocator: nil
+      )
+    else {
+      throw MaskPreparationError.bufferAllocationFailed
+    }
+
+    let requiredBytes = totalElements * MemoryLayout<Float>.size
+    if maskOutputBuffer == nil || maskOutputBuffer!.length < requiredBytes {
+      maskOutputBuffer = device.makeBuffer(length: requiredBytes, options: .storageModeShared)
+    }
+    guard let outputBuffer = maskOutputBuffer else {
+      throw MaskPreparationError.bufferAllocationFailed
+    }
+
+    let shapeByteLength = arguments.shape.count * MemoryLayout<Int64>.size
+    if maskShapeBuffer == nil || maskShapeBuffer!.length < shapeByteLength {
+      maskShapeBuffer = device.makeBuffer(length: shapeByteLength, options: .storageModeShared)
+    }
+    if maskStrideBuffer == nil || maskStrideBuffer!.length < shapeByteLength {
+      maskStrideBuffer = device.makeBuffer(length: shapeByteLength, options: .storageModeShared)
+    }
+    guard let shapeBuffer = maskShapeBuffer, let strideBuffer = maskStrideBuffer else {
+      throw MaskPreparationError.bufferAllocationFailed
+    }
+
+    arguments.shape.withUnsafeBytes { src in
+      if let baseAddress = src.baseAddress {
+        shapeBuffer.contents().copyMemory(from: baseAddress, byteCount: shapeByteLength)
+      }
+    }
+    arguments.strides.withUnsafeBytes { src in
+      if let baseAddress = src.baseAddress {
+        strideBuffer.contents().copyMemory(from: baseAddress, byteCount: shapeByteLength)
+      }
+    }
+
+    let pipeline = try ensureMaskPipeline()
+
+    guard
+      let commandBuffer = commandQueue.makeCommandBuffer(),
+      let encoder = commandBuffer.makeComputeCommandEncoder()
+    else {
+      throw MaskPreparationError.commandEncodingFailed
+    }
+
+    encoder.setComputePipelineState(pipeline)
+    encoder.setBuffer(maskInputBuffer, offset: 0, index: 0)
+    encoder.setBuffer(outputBuffer, offset: 0, index: 1)
+
+    var maskTypeValue = UInt32(arguments.type.rawValue)
+    encoder.setBytes(&maskTypeValue, length: MemoryLayout<UInt32>.size, index: 2)
+    var maskScalarValue = UInt32(arguments.scalarType.rawValue)
+    encoder.setBytes(&maskScalarValue, length: MemoryLayout<UInt32>.size, index: 3)
+
+    var shapeVector: [UInt32] = [batchSize, numHeads, seqLenQ, seqLenKV]
+    shapeVector.withUnsafeBytes { bytes in
+      if let baseAddress = bytes.baseAddress {
+        encoder.setBytes(baseAddress, length: bytes.count, index: 4)
+      }
+    }
+
+    var elementCount = UInt32(totalElements)
+    encoder.setBytes(&elementCount, length: MemoryLayout<UInt32>.size, index: 5)
+
+    var maskDims = UInt32(arguments.ndim)
+    encoder.setBytes(&maskDims, length: MemoryLayout<UInt32>.size, index: 6)
+
+    encoder.setBuffer(shapeBuffer, offset: 0, index: 7)
+    encoder.setBuffer(strideBuffer, offset: 0, index: 8)
+
+    let maxThreads = pipeline.maxTotalThreadsPerThreadgroup
+    let threadsPerGroup = min(maxThreads, 256)
+    let threadgroupSize = MTLSize(width: threadsPerGroup, height: 1, depth: 1)
+    let threadgroupCount = MTLSize(
+      width: (totalElements + threadsPerGroup - 1) / threadsPerGroup,
+      height: 1,
+      depth: 1
+    )
+
+    encoder.dispatchThreadgroups(threadgroupCount, threadsPerThreadgroup: threadgroupSize)
+    encoder.endEncoding()
+
+    commandBuffer.commit()
+    commandBuffer.waitUntilCompleted()
+
+    if let error = commandBuffer.error {
+      print("Mask kernel execution error: \(error)")
+      throw MaskPreparationError.commandExecutionFailed
+    }
+
+    return PreparedMask(buffer: outputBuffer)
   }
 
   func getCachedPipeline(key: PipelineCacheKey) -> (MTLComputePipelineState, AttentionKernel)? {
@@ -455,7 +734,14 @@ public func mfa_attention_forward(
   _ transposeQ: Bool,
   _ transposeK: Bool,
   _ transposeV: Bool,
-  _ transposeO: Bool
+  _ transposeO: Bool,
+  _ maskPtr: UnsafeMutableRawPointer?,
+  _ maskSizeBytes: Int,
+  _ maskShape: UnsafePointer<Int64>?,
+  _ maskStrides: UnsafePointer<Int64>?,
+  _ maskNDim: UInt32,
+  _ maskTypeRaw: Int32,
+  _ maskScalarTypeRaw: Int32
 )
   -> Int32
 {
@@ -472,6 +758,60 @@ public func mfa_attention_forward(
   let kBuffer = Unmanaged<MFABuffer>.fromOpaque(k).takeUnretainedValue()
   let vBuffer = Unmanaged<MFABuffer>.fromOpaque(v).takeUnretainedValue()
   let outBuffer = Unmanaged<MFABuffer>.fromOpaque(out).takeUnretainedValue()
+
+  let resolvedMaskType = MaskType(rawValue: maskTypeRaw) ?? .none
+  let resolvedMaskScalar = MaskScalarType(rawValue: maskScalarTypeRaw) ?? .byte
+  let maskArguments: MaskArguments?
+  if resolvedMaskType != .none,
+     let maskPtr,
+     maskSizeBytes > 0,
+     let maskShape,
+     let maskStrides,
+     maskNDim > 0
+  {
+    let shape = Array(UnsafeBufferPointer(start: maskShape, count: Int(maskNDim)))
+    let strides = Array(UnsafeBufferPointer(start: maskStrides, count: Int(maskNDim)))
+    maskArguments = MaskArguments(
+      pointer: maskPtr,
+      sizeBytes: maskSizeBytes,
+      shape: shape,
+      strides: strides,
+      ndim: maskNDim,
+      type: resolvedMaskType,
+      scalarType: resolvedMaskScalar
+    )
+  } else {
+    maskArguments = nil
+  }
+
+  let preparedMask: PreparedMask?
+  do {
+    preparedMask = try mfaContext.prepareMask(
+      arguments: maskArguments,
+      batchSize: 1,
+      numHeads: numHeads,
+      seqLenQ: seqLenQ,
+      seqLenKV: seqLenKV
+    )
+  } catch let maskError as MFAContext.MaskPreparationError {
+    switch maskError {
+    case .invalidMetadata:
+      print("Mask preparation failed: invalid metadata")
+      return 1
+    case .pipelineCreationFailed:
+      print("Mask preparation failed: pipeline creation error")
+      return 4
+    case .bufferAllocationFailed:
+      print("Mask preparation failed: buffer allocation error")
+      return 2
+    case .commandEncodingFailed, .commandExecutionFailed:
+      print("Mask preparation failed: command submission error")
+      return 5
+    }
+  } catch {
+    print("Mask preparation failed: \(error)")
+    return 5
+  }
 
   // Handle multi-head attention using the new MultiHeadAttention implementation
   if numHeads > 1 {
@@ -493,7 +833,8 @@ public func mfa_attention_forward(
       transposeQ: transposeQ,
       transposeK: transposeK,
       transposeV: transposeV,
-      transposeO: transposeO
+      transposeO: transposeO,
+      preparedMask: preparedMask
     )
   }
 
@@ -526,14 +867,14 @@ public func mfa_attention_forward(
       descriptor.softmaxScale = softmaxScale
 
       // Set precision based on input parameters
-      // FIXED: Convert C FFI enum values to Swift values
+      // Convert C FFI enum values to Swift values
       let swiftInputPrecision = convertCFFIPrecisionToSwift(inputPrecision)
       let swiftIntermediatePrecision = convertCFFIPrecisionToSwift(intermediatePrecision)
 
-      // IMPORTANT FIX: When using FP16/BF16 precision modes with FP32 data,
+      // IMPORTANT: When using FP16/BF16 precision modes with FP32 data,
       // we must use FP32 inputs to avoid NaN issues from precision mismatch
       // The inputs are always FP32 from the FFI layer
-      descriptor.lowPrecisionInputs = false  // Always use FP32 inputs from FFI
+      descriptor.lowPrecisionInputs = false
       // Use FP32 intermediates for numerical stability
       descriptor.lowPrecisionIntermediates = false
 
@@ -645,6 +986,30 @@ public func mfa_attention_forward(
       bufferIndex += 1
     }
 
+    var numHeadsValue = numHeads
+    encoder.setBytes(&numHeadsValue, length: MemoryLayout<UInt32>.size, index: bufferIndex)
+    bufferIndex += 1
+    var numKVHeadsValue = numHeads
+    encoder.setBytes(&numKVHeadsValue, length: MemoryLayout<UInt32>.size, index: bufferIndex)
+    bufferIndex += 1
+    var headDimensionValue = UInt32(headDim)
+    encoder.setBytes(&headDimensionValue, length: MemoryLayout<UInt32>.size, index: bufferIndex)
+    bufferIndex += 1
+    var sequenceLengthValue = seqLenQ
+    encoder.setBytes(&sequenceLengthValue, length: MemoryLayout<UInt32>.size, index: bufferIndex)
+    bufferIndex += 1
+
+    if let mask = preparedMask {
+      encoder.setBuffer(mask.buffer, offset: 0, index: bufferIndex)
+      var hasMask: UInt32 = 1
+      encoder.setBytes(&hasMask, length: MemoryLayout<UInt32>.size, index: bufferIndex + 1)
+    } else {
+      encoder.setBuffer(nil, offset: 0, index: bufferIndex)
+      var hasMask: UInt32 = 0
+      encoder.setBytes(&hasMask, length: MemoryLayout<UInt32>.size, index: bufferIndex + 1)
+    }
+    bufferIndex += 2
+
     // Buffers set: Q, K, V, O, L, D following MFA pattern
 
     // Set threadgroup memory
@@ -726,7 +1091,14 @@ public func mfa_attention_forward_str(
   _ transposeQ: Bool,
   _ transposeK: Bool,
   _ transposeV: Bool,
-  _ transposeO: Bool
+  _ transposeO: Bool,
+  _ maskPtr: UnsafeMutableRawPointer?,
+  _ maskSizeBytes: Int,
+  _ maskShape: UnsafePointer<Int64>?,
+  _ maskStrides: UnsafePointer<Int64>?,
+  _ maskNDim: UInt32,
+  _ maskTypeRaw: Int32,
+  _ maskScalarTypeRaw: Int32
 ) -> Int32 {
   // Convert string precisions to Swift integers
   let inputPrecision = parsePrecisionString(inputPrecisionStr)
@@ -739,7 +1111,9 @@ public func mfa_attention_forward_str(
     batchSize, seqLenQ, seqLenKV,
     numHeads, headDim, softmaxScale, causal,
     inputPrecision, intermediatePrecision, outputPrecision,
-    transposeQ, transposeK, transposeV, transposeO
+    transposeQ, transposeK, transposeV, transposeO,
+    maskPtr, maskSizeBytes, maskShape, maskStrides, maskNDim,
+    maskTypeRaw, maskScalarTypeRaw
   )
 }
 
@@ -864,13 +1238,22 @@ public func mfa_attention_backward_query_quantized(
 
   // Create quantized tensors from buffers
   let qParams = QuantizationParameters(
-    scale: qScale, zeroPoint: qZeroPoint, precision: quantConfig.queryPrecision
+    scale: qScale,
+    zeroPoint: qZeroPoint,
+    precision: quantConfig.queryPrecision,
+    strategy: quantConfig.queryStrategy
   )
   let kParams = QuantizationParameters(
-    scale: kScale, zeroPoint: kZeroPoint, precision: quantConfig.keyPrecision
+    scale: kScale,
+    zeroPoint: kZeroPoint,
+    precision: quantConfig.keyPrecision,
+    strategy: quantConfig.keyStrategy
   )
   let vParams = QuantizationParameters(
-    scale: vScale, zeroPoint: vZeroPoint, precision: quantConfig.valuePrecision
+    scale: vScale,
+    zeroPoint: vZeroPoint,
+    precision: quantConfig.valuePrecision,
+    strategy: quantConfig.valueStrategy
   )
 
   let elementCount = Int(batchSize * seqLenQ * UInt32(headDim))
@@ -1001,13 +1384,22 @@ public func mfa_attention_backward_kv_quantized(
 
   // Create quantized tensors from buffers
   let qParams = QuantizationParameters(
-    scale: qScale, zeroPoint: qZeroPoint, precision: quantConfig.queryPrecision
+    scale: qScale,
+    zeroPoint: qZeroPoint,
+    precision: quantConfig.queryPrecision,
+    strategy: quantConfig.queryStrategy
   )
   let kParams = QuantizationParameters(
-    scale: kScale, zeroPoint: kZeroPoint, precision: quantConfig.keyPrecision
+    scale: kScale,
+    zeroPoint: kZeroPoint,
+    precision: quantConfig.keyPrecision,
+    strategy: quantConfig.keyStrategy
   )
   let vParams = QuantizationParameters(
-    scale: vScale, zeroPoint: vZeroPoint, precision: quantConfig.valuePrecision
+    scale: vScale,
+    zeroPoint: vZeroPoint,
+    precision: quantConfig.valuePrecision,
+    strategy: quantConfig.valueStrategy
   )
 
   let elementCount = Int(batchSize * seqLenKV * UInt32(headDim))
@@ -1081,7 +1473,8 @@ private func mfa_attention_forward_multihead_internal(
   transposeQ: Bool,
   transposeK: Bool,
   transposeV: Bool,
-  transposeO: Bool
+  transposeO: Bool,
+  preparedMask: PreparedMask?
 )
   -> Int32
 {
@@ -1092,11 +1485,11 @@ private func mfa_attention_forward_multihead_internal(
     // Create base attention descriptor
     var baseDescriptor = AttentionDescriptor()
     baseDescriptor.matrixDimensions = (row: seqLenQ, column: seqLenKV, head: headDim)
-    // FIXED: Convert C FFI enum values to Swift values
+    // Convert C FFI enum values to Swift values
     let swiftInputPrecision = convertCFFIPrecisionToSwift(inputPrecision)
     let swiftIntermediatePrecision = convertCFFIPrecisionToSwift(intermediatePrecision)
 
-    // IMPORTANT FIX: When using FP16/BF16 precision modes with FP32 data,
+    // IMPORTANT: When using FP16/BF16 precision modes with FP32 data,
     // we must use FP32 inputs to avoid NaN issues from precision mismatch
     // The inputs are always FP32 from the FFI layer
     baseDescriptor.lowPrecisionInputs = false  // Always use FP32 inputs from FFI
@@ -1141,7 +1534,8 @@ private func mfa_attention_forward_multihead_internal(
         value: vBuffer,
         output: outBuffer,
         logsumexp: nil, // Skip logsumexp for forward-only passes
-        descriptor: multiHeadDescriptor
+        descriptor: multiHeadDescriptor,
+        maskBuffer: preparedMask?.buffer
       )
     else {
       return 5 // MFA_ERROR_EXECUTION_FAILED
@@ -1164,274 +1558,6 @@ private func mfa_attention_forward_multihead_internal(
 
   } catch {
     print("Multi-head attention error: \(error)")
-    return 4 // MFA_ERROR_KERNEL_COMPILATION
-  }
-}
-
-// MARK: - REAL Quantized Multi-Head Attention Implementation
-
-private func mfa_attention_forward_quantized_multihead_internal(
-  context: MFAContext,
-  qBuffer: MTLBuffer,
-  kBuffer: MTLBuffer,
-  vBuffer: MTLBuffer,
-  outBuffer: MTLBuffer,
-  batchSize: UInt32,
-  seqLenQ: UInt32,
-  seqLenKV: UInt32,
-  numHeads: UInt32,
-  headDim: UInt16,
-  quantConfig: QuantizedAttention.Configuration,
-  qParams: QuantizationParameters,
-  kParams: QuantizationParameters,
-  vParams: QuantizationParameters,
-  softmaxScale: Float,
-  causal: Bool,
-  transposeQ: Bool,
-  transposeK: Bool,
-  transposeV: Bool,
-  transposeO: Bool
-)
-  -> Int32
-{
-  print("🌌 ENTERING mfa_attention_forward_quantized_multihead_internal - numHeads: \(numHeads)")
-  print("🚀 REAL Multi-Head Attention: Processing \(numHeads) heads in PARALLEL")
-
-  do {
-    // Create multi-head attention instance (REAL MHA!)
-    let multiHeadAttention = MultiHeadAttention(device: context.device)
-
-    // Create base attention descriptor with quantization-aware settings
-    var baseDescriptor = AttentionDescriptor()
-    baseDescriptor.matrixDimensions = (row: seqLenQ, column: seqLenKV, head: headDim)
-    baseDescriptor.transposeState = (Q: transposeQ, K: transposeK, V: transposeV, O: transposeO)
-    baseDescriptor.sparsityPattern = causal ? .causal : .none
-    baseDescriptor.softmaxScale = softmaxScale
-
-    // Set precision handling for quantized inputs with BF16 compatibility
-    // Force FP32 intermediates for BF16 inputs to prevent numerical instability
-    baseDescriptor.lowPrecisionInputs = false  // Use FP32 inputs for BF16 compatibility
-    baseDescriptor.lowPrecisionIntermediates = false // Use FP32 intermediates for accuracy and stability
-
-    // 🔧 OUTPUT PRECISION: Use default FP16 output for this internal function
-    let metalOutputPrecision: GEMMOperandPrecision = .FP16
-    print("🔧 OUTPUT PRECISION: Using default FP16 output precision")
-
-    // Create tensor shapes for multi-head layout [B, S, H, D]
-    let queryShape = MultiHeadShape(
-      batchSize: batchSize,
-      numHeads: numHeads,
-      sequenceLength: seqLenQ,
-      headDimension: headDim
-    )
-
-    let kvShape = MultiHeadShape(
-      batchSize: batchSize,
-      numHeads: numHeads, // Standard MHA (same num heads for K,V as Q)
-      sequenceLength: seqLenKV,
-      headDimension: headDim
-    )
-
-    // Create multi-head descriptor with efficient dispatch strategy
-    let multiHeadDescriptor = MultiHeadAttentionDescriptor(
-      baseDescriptor: baseDescriptor,
-      queryShape: queryShape,
-      keyShape: kvShape,
-      valueShape: kvShape,
-      broadcastMode: .standard, // Standard MHA mode
-      dispatchStrategy: .batched // Use batched dispatch for maximum parallelism
-    )
-
-    // 🚨 GUARD: Validate MultiHeadAttention descriptor parameters
-    print("🔍 MHA DESCRIPTOR VALIDATION:")
-    print(
-      "   Query shape: batch=\(queryShape.batchSize), heads=\(queryShape.numHeads), seq=\(queryShape.sequenceLength), dim=\(queryShape.headDimension)"
-    )
-    print(
-      "   Key shape: batch=\(kvShape.batchSize), heads=\(kvShape.numHeads), seq=\(kvShape.sequenceLength), dim=\(kvShape.headDimension)"
-    )
-    print(
-      "   Value shape: batch=\(kvShape.batchSize), heads=\(kvShape.numHeads), seq=\(kvShape.sequenceLength), dim=\(kvShape.headDimension)"
-    )
-    print(
-      "   Base descriptor - row: \(baseDescriptor.matrixDimensions?.row ?? 0), col: \(baseDescriptor.matrixDimensions?.column ?? 0), head: \(baseDescriptor.matrixDimensions?.head ?? 0)"
-    )
-    print(
-      "   Broadcast mode: \(multiHeadDescriptor.broadcastMode), Dispatch: \(multiHeadDescriptor.dispatchStrategy)"
-    )
-
-    // APPROACH: Use MultiHeadAttention but pre-process buffers for quantization
-    // This gives us REAL parallel MHA with quantization support
-
-    // TODO: The MultiHeadAttention class doesn't directly support quantized tensors yet
-    // For now, we need to either:
-    // 1. Extend MultiHeadAttention to support QuantizedTensor inputs, OR
-    // 2. Dequantize, run MHA, then handle precision in the output
-
-    // TEMPORARY: Use approach #2 for immediate functionality
-    // This maintains proper parallel MHA while handling quantization
-
-    // 🔧 FIX: Create single shared command queue for all dequantization operations
-    // This prevents the Metal resource contention that causes double-free bugs
-    guard let sharedCommandQueue = context.device.makeCommandQueue() else {
-      print("ERROR: Failed to create shared command queue for dequantization")
-      return 2 // MFA_ERROR_MEMORY_ALLOCATION
-    }
-
-    // 🔧 FIX: Q may be passed in original precision (scale=1.0) and not need dequantization
-    let dequantizedQ: MTLBuffer
-    if true { // 🔧 TEMPORARY: Always skip Q dequantization for testing
-      // Q is already in original precision, use directly
-      print("🔧 Q in original precision (scale=1.0), skipping dequantization")
-      dequantizedQ = qBuffer
-    } else {
-      // Q needs dequantization
-      print("🔧 Q needs dequantization (scale=\(qParams.scale))")
-      guard
-        let buffer = dequantizeBuffer(
-          buffer: qBuffer, params: qParams,
-          elementCount: Int(batchSize * numHeads * seqLenQ * UInt32(headDim)),
-          device: context.device, sharedCommandQueue: sharedCommandQueue
-        )
-      else {
-        print("ERROR: Failed to dequantize Q buffer")
-        return 2 // MFA_ERROR_MEMORY_ALLOCATION
-      }
-      dequantizedQ = buffer
-    }
-
-    guard
-      let dequantizedK = dequantizeBuffer(
-        buffer: kBuffer, params: kParams,
-        elementCount: Int(batchSize * numHeads * seqLenKV * UInt32(headDim)),
-        device: context.device, sharedCommandQueue: sharedCommandQueue
-      )
-    else {
-      print("ERROR: Failed to dequantize K buffer")
-      return 2 // MFA_ERROR_MEMORY_ALLOCATION
-    }
-
-    guard
-      let dequantizedV = dequantizeBuffer(
-        buffer: vBuffer, params: vParams,
-        elementCount: Int(batchSize * numHeads * seqLenKV * UInt32(headDim)),
-        device: context.device, sharedCommandQueue: sharedCommandQueue
-      )
-    else {
-      print("ERROR: Failed to dequantize V buffer")
-      return 2 // MFA_ERROR_MEMORY_ALLOCATION
-    }
-
-    // 🔍 DEBUG: Check dequantized buffer contents before MultiHeadAttention
-    print("🔍 DEBUG BEFORE MHA:")
-    let qPtr = dequantizedQ.contents().bindMemory(to: Float16.self, capacity: 8)
-    let qValues = Array(UnsafeBufferPointer(start: qPtr, count: 8))
-    print("  DequantQ[0:8]: \(qValues)")
-
-    let kPtr = dequantizedK.contents().bindMemory(to: Float16.self, capacity: 8)
-    let kValues = Array(UnsafeBufferPointer(start: kPtr, count: 8))
-    print("  DequantK[0:8]: \(kValues)")
-
-    let vPtr = dequantizedV.contents().bindMemory(to: Float16.self, capacity: 8)
-    let vValues = Array(UnsafeBufferPointer(start: vPtr, count: 8))
-    print("  DequantV[0:8]: \(vValues)")
-
-    // 🚨 GUARD: Validate dequantized inputs are reasonable (breakpoint-style check)
-    let qMax = qValues.compactMap { Float($0) }.max() ?? 0
-    let kMax = kValues.compactMap { Float($0) }.max() ?? 0
-    let vMax = vValues.compactMap { Float($0) }.max() ?? 0
-
-    if qMax == 0 || kMax == 0 || vMax == 0 {
-      print("🚨 DEQUANTIZATION ERROR: Zero values detected in inputs!")
-      print("   Q_max=\(qMax), K_max=\(kMax), V_max=\(vMax)")
-      return 6 // Custom error for dequantization failure
-    }
-
-    print("✅ Dequantized inputs validated: Q_max=\(qMax), K_max=\(kMax), V_max=\(vMax)")
-
-    // 🚨 GUARD: Validate buffer sizes before Metal execution
-    print("🔍 BUFFER SIZE VALIDATION:")
-    print("   DequantQ buffer length: \(dequantizedQ.length) bytes")
-    print("   DequantK buffer length: \(dequantizedK.length) bytes")
-    print("   DequantV buffer length: \(dequantizedV.length) bytes")
-    print("   Output buffer length: \(outBuffer.length) bytes")
-
-    // 🔧 FIX: Calculate expected sizes based on actual precision types
-    let numElements = Int(batchSize * numHeads * seqLenQ * UInt32(headDim))
-    let expectedQSize = numElements * MemoryLayout<Float16>.size // Q uses FP16 after dequantization
-    let expectedKVSize = numElements * MemoryLayout<Float16>.size // K,V also dequantized to FP16
-    let expectedOutputSize = numElements * MemoryLayout<Float16>.size
-
-    print("   Expected Q buffer size: \(expectedQSize) bytes")
-    print("   Expected K/V buffer size: \(expectedKVSize) bytes")
-    print("   Expected output size: \(expectedOutputSize) bytes")
-
-    if dequantizedQ.length != expectedQSize {
-      print("🚨 Q BUFFER SIZE MISMATCH: expected \(expectedQSize), got \(dequantizedQ.length)")
-    }
-    if dequantizedK.length != expectedKVSize {
-      print("🚨 K BUFFER SIZE MISMATCH: expected \(expectedKVSize), got \(dequantizedK.length)")
-    }
-    if dequantizedV.length != expectedKVSize {
-      print("🚨 V BUFFER SIZE MISMATCH: expected \(expectedKVSize), got \(dequantizedV.length)")
-    }
-    if outBuffer.length != 2 * expectedOutputSize { // Output buffer is double-sized for safety
-      print(
-        "🚨 OUTPUT BUFFER SIZE MISMATCH: expected \(2 * expectedOutputSize), got \(outBuffer.length)"
-      )
-    }
-
-    // Execute REAL parallel multi-head attention
-    guard
-      let commandBuffer = multiHeadAttention.forward(
-        query: dequantizedQ,
-        key: dequantizedK,
-        value: dequantizedV,
-        output: outBuffer,
-        logsumexp: nil, // Skip logsumexp for forward-only passes
-        descriptor: multiHeadDescriptor
-      )
-    else {
-      print("🚨 CRITICAL ERROR: Failed to create multi-head attention command buffer")
-      print("   This indicates Metal shader compilation or resource allocation failure")
-      return 5 // MFA_ERROR_EXECUTION_FAILED
-    }
-
-    print("✅ Multi-head attention command buffer created successfully")
-
-    // Execute the parallel multi-head attention
-    commandBuffer.commit()
-    commandBuffer.waitUntilCompleted()
-
-    // 🚨 GUARD: Check for Metal command buffer errors (like breakpoint)
-    if let error = commandBuffer.error {
-      print("🚨 METAL ERROR DETECTED: \(error)")
-      print("   Error domain: \(error._domain)")
-      print("   Error code: \(error._code)")
-      print("   Error description: \(error.localizedDescription)")
-      return 5 // MFA_ERROR_EXECUTION_FAILED
-    }
-
-    // 🔍 GUARD: Validate Metal execution completed successfully
-    print("✅ Metal command buffer completed successfully")
-    print("   Command buffer status: \(commandBuffer.status.rawValue)")
-
-    // 🔍 DEBUG: Check output buffer contents IMMEDIATELY after Metal execution
-    print("🔍 DEBUG AFTER MHA METAL EXECUTION:")
-
-    // 🔧 TYPE-SAFE OUTPUT VALIDATION: Read according to configured output precision
-    print("🔍 Validating output buffer (FP16 assumed)")
-
-    // Use FP16 for this internal function
-    let outPtr = outBuffer.contents().bindMemory(to: Float16.self, capacity: 8)
-    let outputValues = Array(UnsafeBufferPointer<Float16>(start: outPtr, count: 8))
-    print("  Output (FP16)[0:8]: \(outputValues)")
-    print("✅ FP16 output values validated successfully")
-
-    return 0 // MFA_SUCCESS
-
-  } catch {
-    print("ERROR: Multi-head attention setup failed: \(error)")
     return 4 // MFA_ERROR_KERNEL_COMPILATION
   }
 }
@@ -1506,7 +1632,7 @@ private func dequantizeBuffer(
     return nil
   }
 
-  // 🔧 FIX: Use shared command queue instead of creating new one
+  // Use shared command queue instead of creating new one
   // This prevents Metal resource contention and double-free bugs
   guard
     let commandBuffer = sharedCommandQueue.makeCommandBuffer(),
@@ -1618,13 +1744,22 @@ public func mfa_attention_forward_quantized_unified(
 
   // Create quantization parameters for unified processing
   let qParams = QuantizationParameters(
-    scale: qScale, zeroPoint: qZeroPoint, precision: GEMMOperandPrecision(rawValue: UInt16(qPrecision)) ?? .FP16
+    scale: qScale,
+    zeroPoint: qZeroPoint,
+    precision: GEMMOperandPrecision(rawValue: UInt16(qPrecision)) ?? .FP16,
+    strategy: .legacy
   )
   let kParams = QuantizationParameters(
-    scale: kScale, zeroPoint: kZeroPoint, precision: GEMMOperandPrecision(rawValue: UInt16(kPrecision)) ?? .INT8
+    scale: kScale,
+    zeroPoint: kZeroPoint,
+    precision: GEMMOperandPrecision(rawValue: UInt16(kPrecision)) ?? .INT8,
+    strategy: .legacy
   )
   let vParams = QuantizationParameters(
-    scale: vScale, zeroPoint: vZeroPoint, precision: GEMMOperandPrecision(rawValue: UInt16(vPrecision)) ?? .INT8
+    scale: vScale,
+    zeroPoint: vZeroPoint,
+    precision: GEMMOperandPrecision(rawValue: UInt16(vPrecision)) ?? .INT8,
+    strategy: .legacy
   )
 
   print("🔧 Unified quantization parameters:")
@@ -1778,8 +1913,3 @@ public func mfa_attention_forward_quantized_enhanced(
 
 // BACKWARD COMPATIBILITY WRAPPERS FOR DEQUANTIZATION
 // These functions provide backward compatibility while routing through the unified implementation
-
-
-
-
-
