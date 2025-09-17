@@ -334,6 +334,90 @@ public func mfa_buffer_from_ptr_with_strides(
   return 0 // MFA_SUCCESS
 }
 
+@_cdecl("mfa_buffer_from_mtl_buffer")
+public func mfa_buffer_from_mtl_buffer(
+  _ context: UnsafeMutableRawPointer?,
+  _ metalBufferPtr: UnsafeMutableRawPointer?,
+  _ sizeBytes: Int,
+  _ buffer: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+)
+  -> Int32
+{
+  _ = context
+
+  guard
+    let metalBufferPtr,
+    let buffer
+  else { return 1 } // MFA_ERROR_INVALID_ARGS
+
+  let anyObject = Unmanaged<AnyObject>.fromOpaque(metalBufferPtr).takeUnretainedValue()
+  guard let mtlBuffer = anyObject as? MTLBuffer else {
+    return 1 // MFA_ERROR_INVALID_ARGS
+  }
+
+  if sizeBytes > 0 && mtlBuffer.length < sizeBytes {
+    return 1 // Requested size exceeds buffer length
+  }
+
+  let mfaBuffer = MFABuffer(
+    buffer: mtlBuffer,
+    originalDataPtr: nil,
+    dataSize: sizeBytes
+  )
+  let unmanagedBuffer = Unmanaged.passRetained(mfaBuffer)
+  buffer.pointee = unmanagedBuffer.toOpaque()
+
+  return 0 // MFA_SUCCESS
+}
+
+@_cdecl("mfa_buffer_from_mtl_buffer_with_strides")
+public func mfa_buffer_from_mtl_buffer_with_strides(
+  _ context: UnsafeMutableRawPointer?,
+  _ metalBufferPtr: UnsafeMutableRawPointer?,
+  _ sizeBytes: Int,
+  _ shape: UnsafePointer<Int64>?,
+  _ strides: UnsafePointer<Int64>?,
+  _ ndim: UInt32,
+  _ buffer: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+)
+  -> Int32
+{
+  _ = context
+
+  guard
+    let metalBufferPtr,
+    let buffer,
+    let shape,
+    let strides,
+    ndim > 0
+  else { return 1 } // MFA_ERROR_INVALID_ARGS
+
+  let anyObject = Unmanaged<AnyObject>.fromOpaque(metalBufferPtr).takeUnretainedValue()
+  guard let mtlBuffer = anyObject as? MTLBuffer else {
+    return 1 // MFA_ERROR_INVALID_ARGS
+  }
+
+  if sizeBytes > 0 && mtlBuffer.length < sizeBytes {
+    return 1 // Requested size exceeds buffer length
+  }
+
+  let shapeArray = Array(UnsafeBufferPointer(start: shape, count: Int(ndim)))
+  let stridesArray = Array(UnsafeBufferPointer(start: strides, count: Int(ndim)))
+
+  let mfaBuffer = MFABuffer(
+    buffer: mtlBuffer,
+    originalDataPtr: nil,
+    dataSize: sizeBytes,
+    shape: shapeArray,
+    strides: stridesArray,
+    ndim: ndim
+  )
+  let unmanagedBuffer = Unmanaged.passRetained(mfaBuffer)
+  buffer.pointee = unmanagedBuffer.toOpaque()
+
+  return 0 // MFA_SUCCESS
+}
+
 @_cdecl("mfa_buffer_contents")
 public func mfa_buffer_contents(_ buffer: UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer? {
   guard let buffer else { return nil }
@@ -1694,8 +1778,6 @@ public func mfa_attention_forward_quantized_enhanced(
 
 // BACKWARD COMPATIBILITY WRAPPERS FOR DEQUANTIZATION
 // These functions provide backward compatibility while routing through the unified implementation
-
-
 
 
 

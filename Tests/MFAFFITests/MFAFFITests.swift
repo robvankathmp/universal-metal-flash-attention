@@ -534,14 +534,31 @@ final class MFAFFITests: XCTestCase {
     let variance = output.map { pow($0 - mean, 2) }.reduce(0, +) / Float(output.count)
     let stdDev = sqrt(variance)
 
+    // For minimal tensor sizes (especially 1x1), zero variance is mathematically expected
+    // because softmax of a single element always equals 1.0, making output = V
+    let isMinimalSize = output.count <= 1
+
     // Attention outputs should have reasonable statistical properties
-    XCTAssertGreaterThan(stdDev, 0.001, "\(testName): Output has too little variance")
+    if !isMinimalSize {
+      XCTAssertGreaterThan(stdDev, 0.001, "\(testName): Output has too little variance")
+    } else {
+      // For minimal sizes, verify output is finite and reasonable
+      XCTAssertTrue(stdDev >= 0.0, "\(testName): Standard deviation should be non-negative")
+      XCTAssertTrue(output.allSatisfy { $0.isFinite }, "\(testName): All outputs should be finite for minimal size")
+    }
+
     XCTAssertLessThan(abs(mean), 10.0, "\(testName): Output mean is too extreme")
 
     // Check for reasonable output range
     let minVal = output.min() ?? 0
     let maxVal = output.max() ?? 0
-    XCTAssertGreaterThan(maxVal - minVal, 0.001, "\(testName): Output range is too narrow")
+
+    if !isMinimalSize {
+      XCTAssertGreaterThan(maxVal - minVal, 0.001, "\(testName): Output range is too narrow")
+    } else {
+      // For minimal sizes, just verify the range is non-negative
+      XCTAssertGreaterThanOrEqual(maxVal - minVal, 0.0, "\(testName): Output range should be non-negative")
+    }
   }
 
   func validatePatternResults(output: [Float], pattern: String, testName: String) {

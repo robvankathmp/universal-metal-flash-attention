@@ -104,6 +104,42 @@ mfa_error_t mfa_buffer_from_ptr(
 );
 
 /**
+ * @brief Create a buffer from existing data pointer with explicit shape/strides metadata
+ */
+mfa_error_t mfa_buffer_from_ptr_with_strides(
+    mfa_context_t context,
+    void* data_ptr,
+    size_t size_bytes,
+    const int64_t* shape,
+    const int64_t* strides,
+    uint32_t ndim,
+    mfa_buffer_t* buffer
+);
+
+/**
+ * @brief Create a buffer view backed by a Metal buffer handle
+ */
+mfa_error_t mfa_buffer_from_mtl_buffer(
+    mfa_context_t context,
+    void* metal_buffer,
+    size_t size_bytes,
+    mfa_buffer_t* buffer
+);
+
+/**
+ * @brief Create a strided buffer view backed by a Metal buffer handle
+ */
+mfa_error_t mfa_buffer_from_mtl_buffer_with_strides(
+    mfa_context_t context,
+    void* metal_buffer,
+    size_t size_bytes,
+    const int64_t* shape,
+    const int64_t* strides,
+    uint32_t ndim,
+    mfa_buffer_t* buffer
+);
+
+/**
  * @brief Get the contents pointer of a buffer
  *
  * @param buffer The buffer to access
