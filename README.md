@@ -158,7 +158,6 @@ If you use this library in your research, please cite both this repository and t
   publisher = {GitHub},
   journal = {GitHub repository},
   howpublished = {\url{https://github.com/bghira/universal-metal-flash-attention}},
-    note = {Accessed: 2025-10-01}
 }
 ```
 
@@ -172,7 +171,6 @@ If you use this library in your research, please cite both this repository and t
     publisher = {GitHub},
     journal = {GitHub repository},
     howpublished = {\url{https://github.com/philipturner/metal-flash-attention}},
-    note = {Accessed: 2025-10-01}
 }
 ```
 
