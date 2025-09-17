@@ -34,7 +34,7 @@ build-pytorch: build-swift
 	@echo "✅ PyTorch extension build complete"
 
 # Test targets - SHOWING THE PROBLEM
-.PHONY: test-single test-multihead-broken
+.PHONY: test-single
 test-single: build-pytorch
 	@echo "🧪 Testing single-head attention..."
 	cd $(FLUX_DIR) && \
@@ -44,17 +44,6 @@ import torch, metal_sdpa_extension; \
 q=k=v=torch.randn(1,4,1,8,dtype=torch.float16)*0.1; \
 result=metal_sdpa_extension.quantized_scaled_dot_product_attention(q,k,v,precision='int8'); \
 print(f'✅ Single-head works: {result.shape}')"
-
-test-multihead-broken: build-pytorch
-	@echo "🚨 Testing multi-head attention (BROKEN - not real MHA)..."
-	cd $(FLUX_DIR) && \
-	DYLD_LIBRARY_PATH=$(DYLD_LIBRARY_PATH) $(PYTHON) -c "\
-import sys; sys.path.append('pytorch-custom-op-ffi'); \
-import torch, metal_sdpa_extension; \
-q=k=v=torch.randn(1,4,4,8,dtype=torch.float16)*0.1; \
-print('⚠️  This runs 4 single-head operations sequentially - NOT parallel MHA!'); \
-result=metal_sdpa_extension.quantized_scaled_dot_product_attention(q,k,v,precision='int8'); \
-print(f'🚨 Fake multi-head result: {result.shape}')"
 
 # Show the proper MHA approach
 .PHONY: show-real-mha-approach
@@ -80,6 +69,5 @@ help:
 	@echo "Commands:"
 	@echo "  make build                    - Build Swift + PyTorch extension"
 	@echo "  make test-single              - Test single-head (works)"
-	@echo "  make test-multihead-broken    - Test fake multi-head (broken approach)"
 	@echo "  make show-real-mha-approach   - Show what real MHA should look like"
 	@echo "  make clean                    - Clean build artifacts"
