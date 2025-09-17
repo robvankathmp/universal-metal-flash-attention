@@ -8,7 +8,7 @@
 import MFAFFI
 import XCTest
 
-extension Array where Element == Float {
+extension [Float] {
   func minAndMax() -> (min: Float, max: Float) {
     guard !isEmpty else { return (0.0, 0.0) }
     var min = self[0]
@@ -46,22 +46,65 @@ final class MultiHeadFFITests: XCTestCase {
 
     let testConfigurations = [
       // Standard configurations
-      (name: "Standard Small", batchSize: UInt32(1), numHeads: UInt32(4), seqLen: UInt32(32), headDim: UInt16(16)),
-      (name: "Standard Medium", batchSize: UInt32(1), numHeads: UInt32(8), seqLen: UInt32(128), headDim: UInt16(64)),
+      (
+        name: "Standard Small",
+        batchSize: UInt32(1),
+        numHeads: UInt32(4),
+        seqLen: UInt32(32),
+        headDim: UInt16(16)
+      ),
+      (
+        name: "Standard Medium",
+        batchSize: UInt32(1),
+        numHeads: UInt32(8),
+        seqLen: UInt32(128),
+        headDim: UInt16(64)
+      ),
 
       // FLUX-specific configurations (reduced for faster testing)
-      (name: "FLUX Small", batchSize: UInt32(1), numHeads: UInt32(8), seqLen: UInt32(256), headDim: UInt16(32)),
+      (
+        name: "FLUX Small",
+        batchSize: UInt32(1),
+        numHeads: UInt32(8),
+        seqLen: UInt32(256),
+        headDim: UInt16(32)
+      ),
       // (name: "FLUX Joint Attention", batchSize: UInt32(1), numHeads: UInt32(24), seqLen: UInt32(512), headDim: UInt16(64)),
       // (name: "FLUX Large", batchSize: UInt32(1), numHeads: UInt32(16), seqLen: UInt32(1024), headDim: UInt16(88)),
       // (name: "FLUX XL", batchSize: UInt32(1), numHeads: UInt32(24), seqLen: UInt32(4096), headDim: UInt16(128)),
     ]
 
     let precisionConfigs = [
-      (name: "FP32", input: mfa_precision_t(2), intermediate: mfa_precision_t(2), output: mfa_precision_t(2)),
-      (name: "FP16", input: mfa_precision_t(0), intermediate: mfa_precision_t(0), output: mfa_precision_t(0)),
-      (name: "BF16", input: mfa_precision_t(1), intermediate: mfa_precision_t(1), output: mfa_precision_t(1)),
-      (name: "Mixed FP32->FP16", input: mfa_precision_t(2), intermediate: mfa_precision_t(0), output: mfa_precision_t(0)),
-      (name: "Mixed BF16->FP32", input: mfa_precision_t(1), intermediate: mfa_precision_t(2), output: mfa_precision_t(2)),
+      (
+        name: "FP32",
+        input: mfa_precision_t(2),
+        intermediate: mfa_precision_t(2),
+        output: mfa_precision_t(2)
+      ),
+      (
+        name: "FP16",
+        input: mfa_precision_t(0),
+        intermediate: mfa_precision_t(0),
+        output: mfa_precision_t(0)
+      ),
+      (
+        name: "BF16",
+        input: mfa_precision_t(1),
+        intermediate: mfa_precision_t(1),
+        output: mfa_precision_t(1)
+      ),
+      (
+        name: "Mixed FP32->FP16",
+        input: mfa_precision_t(2),
+        intermediate: mfa_precision_t(0),
+        output: mfa_precision_t(0)
+      ),
+      (
+        name: "Mixed BF16->FP32",
+        input: mfa_precision_t(1),
+        intermediate: mfa_precision_t(2),
+        output: mfa_precision_t(2)
+      ),
     ]
 
     for config in testConfigurations {
@@ -104,8 +147,10 @@ final class MultiHeadFFITests: XCTestCase {
     inputPrecision: mfa_precision_t,
     intermediatePrecision: mfa_precision_t,
     outputPrecision: mfa_precision_t,
-    precisionName: String
-  ) throws -> Bool {
+    precisionName _: String
+  ) throws
+    -> Bool
+  {
     let totalElements = Int(batchSize * numHeads * seqLen * UInt32(headDim))
 
     // Generate deterministic test data for reproducibility
@@ -137,14 +182,16 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
     }
 
-    guard result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
-          result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS) else {
+    guard
+      result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
+      result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS)
+    else {
       print("    ❌ Failed to create buffers")
       return false
     }
 
     // Execute multi-head attention
-    let result = mfa_attention_forward(
+    let result = mfa_attention_forward_nomask(
       context, qBuffer, kBuffer, vBuffer, oBuffer,
       batchSize, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(), // softmax scale
@@ -216,7 +263,9 @@ final class MultiHeadFFITests: XCTestCase {
     } / Float(outputData.count)
     let stdDev = sqrt(variance)
 
-    print("    ✅ H=\(numHeads), S=\(seqLen), D=\(headDim), Range=[\(String(format: "%.3f", outputRange.min)), \(String(format: "%.3f", outputRange.max))], StdDev=\(String(format: "%.4f", stdDev))")
+    print(
+      "    ✅ H=\(numHeads), S=\(seqLen), D=\(headDim), Range=[\(String(format: "%.3f", outputRange.min)), \(String(format: "%.3f", outputRange.max))], StdDev=\(String(format: "%.4f", stdDev))"
+    )
 
     return true
   }
@@ -303,7 +352,9 @@ final class MultiHeadFFITests: XCTestCase {
     quantizationPrecision: mfa_precision_t,
     outputPrecision: mfa_precision_t,
     configName: String
-  ) throws -> Bool {
+  ) throws
+    -> Bool
+  {
     // Note: This is a basic test for quantized attention
     // Full quantization testing would require additional FFI functions
     // For now, we test that the precision values are handled correctly
@@ -335,14 +386,16 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
     }
 
-    guard result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
-          result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS) else {
+    guard
+      result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
+      result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS)
+    else {
       print("    ❌ Failed to create quantization buffers")
       return false
     }
 
     // Test with quantized key/value precision
-    let result = mfa_attention_forward(
+    let result = mfa_attention_forward_nomask(
       context, qBuffer, kBuffer, vBuffer, oBuffer,
       batchSize, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(),
@@ -403,26 +456,47 @@ final class MultiHeadFFITests: XCTestCase {
       (heads: 1, name: "Single Head", seqLens: [64, 256]),
       (heads: 4, name: "Standard 4", seqLens: [128, 512]),
       (heads: 8, name: "Standard 8", seqLens: stressEnabled ? [256, 1024] : [256, 512]),
-      (heads: 12, name: "Medium 12", seqLens: stressEnabled ? [512, 2048] : [512])
+      (heads: 12, name: "Medium 12", seqLens: stressEnabled ? [512, 2048] : [512]),
     ]
 
     if stressEnabled {
       headCountConfigs.append(contentsOf: [
         (heads: 16, name: "Large 16", seqLens: [1024, 4096]),
         (heads: 24, name: "FLUX Joint", seqLens: [512, 2048]),
-        (heads: 32, name: "Extreme 32", seqLens: [256, 1024])
+        (heads: 32, name: "Extreme 32", seqLens: [256, 1024]),
       ])
     }
 
     let precisionConfigsBase = [
-      (name: "FP32", input: mfa_precision_t(2), intermediate: mfa_precision_t(2), output: mfa_precision_t(2)),
-      (name: "FP16", input: mfa_precision_t(0), intermediate: mfa_precision_t(0), output: mfa_precision_t(0))
+      (
+        name: "FP32",
+        input: mfa_precision_t(2),
+        intermediate: mfa_precision_t(2),
+        output: mfa_precision_t(2)
+      ),
+      (
+        name: "FP16",
+        input: mfa_precision_t(0),
+        intermediate: mfa_precision_t(0),
+        output: mfa_precision_t(0)
+      ),
     ]
     let precisionConfigsStress = [
-      (name: "BF16", input: mfa_precision_t(1), intermediate: mfa_precision_t(1), output: mfa_precision_t(1)),
-      (name: "Mixed FP16->FP32", input: mfa_precision_t(0), intermediate: mfa_precision_t(2), output: mfa_precision_t(2))
+      (
+        name: "BF16",
+        input: mfa_precision_t(1),
+        intermediate: mfa_precision_t(1),
+        output: mfa_precision_t(1)
+      ),
+      (
+        name: "Mixed FP16->FP32",
+        input: mfa_precision_t(0),
+        intermediate: mfa_precision_t(2),
+        output: mfa_precision_t(2)
+      ),
     ]
-    let precisionConfigs = stressEnabled ? precisionConfigsBase + precisionConfigsStress : precisionConfigsBase
+    let precisionConfigs = stressEnabled ? precisionConfigsBase + precisionConfigsStress :
+      precisionConfigsBase
 
     let headDims: [UInt16] = stressEnabled ? [64, 88, 128] : [64, 88]
 
@@ -436,7 +510,7 @@ final class MultiHeadFFITests: XCTestCase {
       for seqLen in headConfig.seqLens {
         for headDim in headDims {
           // Skip very large configurations to avoid memory issues in tests
-          if headConfig.heads * seqLen > 32768 && headDim == 128 {
+          if headConfig.heads * seqLen > 32768, headDim == 128 {
             continue
           }
 
@@ -513,7 +587,9 @@ final class MultiHeadFFITests: XCTestCase {
     intermediatePrecision: mfa_precision_t,
     outputPrecision: mfa_precision_t,
     testName: String
-  ) throws -> (passed: Bool, reason: String?, warning: String?) {
+  ) throws
+    -> (passed: Bool, reason: String?, warning: String?)
+  {
     let batchSize: UInt32 = 1
     let totalElements = Int(batchSize * numHeads * seqLen * UInt32(headDim))
 
@@ -545,13 +621,15 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
     }
 
-    guard result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
-          result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS) else {
+    guard
+      result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
+      result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS)
+    else {
       return (false, "Buffer creation failed", nil)
     }
 
     // Execute multi-head attention
-    let result = mfa_attention_forward(
+    let result = mfa_attention_forward_nomask(
       context, qBuffer, kBuffer, vBuffer, oBuffer,
       batchSize, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(),
@@ -622,7 +700,7 @@ final class MultiHeadFFITests: XCTestCase {
 
       // Check that different heads produce sufficiently different outputs
       for i in 0..<headOutputs.count {
-        for j in (i+1)..<headOutputs.count {
+        for j in (i + 1)..<headOutputs.count {
           let correlation = calculateCorrelation(headOutputs[i], headOutputs[j])
           // Different heads should not be too highly correlated
           if correlation > 0.95 {
@@ -698,7 +776,7 @@ final class MultiHeadFFITests: XCTestCase {
     let configs = [
       (heads: UInt32(2), seqLen: UInt32(8), headDim: UInt16(16)),
       (heads: UInt32(4), seqLen: UInt32(16), headDim: UInt16(32)),
-      (heads: UInt32(8), seqLen: UInt32(32), headDim: UInt16(64))
+      (heads: UInt32(8), seqLen: UInt32(32), headDim: UInt16(64)),
     ]
 
     for config in configs {
@@ -762,7 +840,9 @@ final class MultiHeadFFITests: XCTestCase {
     // Should scale reasonably (not more than heads * 2)
     XCTAssertLessThan(scalingRatio, Double(headCounts.last! * 2), "Performance scaling too poor")
 
-    print("    ✅ Performance scaling: \(String(format: "%.1f", scalingRatio))x for \(headCounts.last!)x heads")
+    print(
+      "    ✅ Performance scaling: \(String(format: "%.1f", scalingRatio))x for \(headCounts.last!)x heads"
+    )
   }
 
   private func runAttentionWithConfig(
@@ -770,7 +850,9 @@ final class MultiHeadFFITests: XCTestCase {
     seqLen: UInt32,
     headDim: UInt16,
     seed: UInt64
-  ) throws -> [Float] {
+  ) throws
+    -> [Float]
+  {
     let batchSize: UInt32 = 1
     let totalElements = Int(batchSize * numHeads * seqLen * UInt32(headDim))
 
@@ -799,17 +881,24 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_buffer_from_ptr(context, ptr.baseAddress, dataSize, &oBuffer)
     }
 
-    guard result1 == mfa_error_t(MFA_SUCCESS) && result2 == mfa_error_t(MFA_SUCCESS) &&
-          result3 == mfa_error_t(MFA_SUCCESS) && result4 == mfa_error_t(MFA_SUCCESS) else {
-      throw NSError(domain: "MFA", code: -1, userInfo: [NSLocalizedDescriptionKey: "Buffer creation failed"])
+    guard
+      result1 == mfa_error_t(MFA_SUCCESS), result2 == mfa_error_t(MFA_SUCCESS),
+      result3 == mfa_error_t(MFA_SUCCESS), result4 == mfa_error_t(MFA_SUCCESS)
+    else {
+      throw NSError(
+        domain: "MFA",
+        code: -1,
+        userInfo: [NSLocalizedDescriptionKey: "Buffer creation failed"]
+      )
     }
 
-    let result = mfa_attention_forward(
+    let result = mfa_attention_forward_nomask(
       context, qBuffer, kBuffer, vBuffer, oBuffer,
       batchSize, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(),
       false,
-      mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+      mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+      mfa_precision_t(MFA_PRECISION_FP32),
       false, false, false, false
     )
 
@@ -821,7 +910,11 @@ final class MultiHeadFFITests: XCTestCase {
     }
 
     guard result == mfa_error_t(MFA_SUCCESS) else {
-      throw NSError(domain: "MFA", code: Int(result), userInfo: [NSLocalizedDescriptionKey: "Attention execution failed"])
+      throw NSError(
+        domain: "MFA",
+        code: Int(result),
+        userInfo: [NSLocalizedDescriptionKey: "Attention execution failed"]
+      )
     }
 
     return outputData
@@ -856,7 +949,9 @@ final class MultiHeadFFITests: XCTestCase {
     headDim: UInt16,
     iterations: Int,
     seed: UInt64
-  ) -> Double {
+  )
+    -> Double
+  {
     precondition(iterations > 0, "Iterations must be greater than zero")
 
     let batchSize: UInt32 = 1
@@ -898,24 +993,26 @@ final class MultiHeadFFITests: XCTestCase {
       mfa_destroy_buffer(oBuffer)
     }
 
-    let warmUp = mfa_attention_forward(
+    let warmUp = mfa_attention_forward_nomask(
       context, qBuffer, kBuffer, vBuffer, oBuffer,
       batchSize, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(),
       false,
-      mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+      mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+      mfa_precision_t(MFA_PRECISION_FP32),
       false, false, false, false
     )
     XCTAssertEqual(warmUp, mfa_error_t(MFA_SUCCESS))
 
     let startTime = CFAbsoluteTimeGetCurrent()
     for _ in 0..<iterations {
-      let result = mfa_attention_forward(
+      let result = mfa_attention_forward_nomask(
         context, qBuffer, kBuffer, vBuffer, oBuffer,
         batchSize, seqLen, seqLen, numHeads, headDim,
         1.0 / Float(headDim).squareRoot(),
         false,
-        mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+        mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+        mfa_precision_t(MFA_PRECISION_FP32),
         false, false, false, false
       )
       XCTAssertEqual(result, mfa_error_t(MFA_SUCCESS))
@@ -997,15 +1094,30 @@ final class MultiHeadFFITests: XCTestCase {
 
     // Use small dimensions for exact comparison
     let configs = [
-      (name: "Tiny", batchSize: UInt32(1), numHeads: UInt32(2), seqLen: UInt32(4), headDim: UInt16(8)),
-      (name: "Small", batchSize: UInt32(1), numHeads: UInt32(4), seqLen: UInt32(8), headDim: UInt16(16)),
+      (
+        name: "Tiny",
+        batchSize: UInt32(1),
+        numHeads: UInt32(2),
+        seqLen: UInt32(4),
+        headDim: UInt16(8)
+      ),
+      (
+        name: "Small",
+        batchSize: UInt32(1),
+        numHeads: UInt32(4),
+        seqLen: UInt32(8),
+        headDim: UInt16(16)
+      ),
     ]
 
     for config in configs {
       print("\n--- Testing \(config.name) Configuration ---")
 
       // Generate the same deterministic data that we can reproduce in Python
-      let totalElements = Int(config.batchSize * config.numHeads * config.seqLen * UInt32(config.headDim))
+      let totalElements = Int(
+        config.batchSize * config.numHeads * config
+          .seqLen * UInt32(config.headDim)
+      )
       let seed: UInt64 = 12345
 
       var queryData = generateDeterministicData(count: totalElements, seed: seed)
@@ -1040,12 +1152,13 @@ final class MultiHeadFFITests: XCTestCase {
       XCTAssertEqual(result4, mfa_error_t(MFA_SUCCESS))
 
       // Execute MFA attention
-      let result = mfa_attention_forward(
+      let result = mfa_attention_forward_nomask(
         context, qBuffer, kBuffer, vBuffer, oBuffer,
         config.batchSize, config.seqLen, config.seqLen, config.numHeads, config.headDim,
         1.0 / Float(config.headDim).squareRoot(),
         false, // causal
-        mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+        mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+        mfa_precision_t(MFA_PRECISION_FP32),
         false, false, false, false
       )
 
@@ -1063,17 +1176,31 @@ final class MultiHeadFFITests: XCTestCase {
       XCTAssertFalse(outputData.contains { $0.isInfinite }, "MFA output contains Inf")
 
       // Print data for manual verification against PyTorch
-      print("  Configuration: B=\(config.batchSize), H=\(config.numHeads), S=\(config.seqLen), D=\(config.headDim)")
+      print(
+        "  Configuration: B=\(config.batchSize), H=\(config.numHeads), S=\(config.seqLen), D=\(config.headDim)"
+      )
       print("  Seed: \(seed)")
-      print("  First 5 Q values: \(Array(queryData.prefix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))")
-      print("  First 5 K values: \(Array(keyData.prefix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))")
-      print("  First 5 V values: \(Array(valueData.prefix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))")
-      print("  First 5 output values: \(Array(outputData.prefix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))")
-      print("  Last 5 output values: \(Array(outputData.suffix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))")
+      print(
+        "  First 5 Q values: \(Array(queryData.prefix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))"
+      )
+      print(
+        "  First 5 K values: \(Array(keyData.prefix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))"
+      )
+      print(
+        "  First 5 V values: \(Array(valueData.prefix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))"
+      )
+      print(
+        "  First 5 output values: \(Array(outputData.prefix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))"
+      )
+      print(
+        "  Last 5 output values: \(Array(outputData.suffix(5)).map { String(format: "%.6f", $0) }.joined(separator: ", "))"
+      )
 
       // Basic sanity checks
       let outputRange = outputData.minAndMax()
-      print("  Output range: [\(String(format: "%.6f", outputRange.min)), \(String(format: "%.6f", outputRange.max))]")
+      print(
+        "  Output range: [\(String(format: "%.6f", outputRange.min)), \(String(format: "%.6f", outputRange.max))]"
+      )
 
       // Verify reasonable output characteristics
       let mean = outputData.reduce(0, +) / Float(outputData.count)
@@ -1154,12 +1281,13 @@ final class MultiHeadFFITests: XCTestCase {
       XCTAssertEqual(result4, mfa_error_t(MFA_SUCCESS))
 
       // Execute with transpose flags
-      let result = mfa_attention_forward(
+      let result = mfa_attention_forward_nomask(
         context, qBuffer, kBuffer, vBuffer, oBuffer,
         batchSize, seqLen, seqLen, numHeads, headDim,
         1.0 / Float(headDim).squareRoot(),
         false, // causal
-        mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+        mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+        mfa_precision_t(MFA_PRECISION_FP32),
         config.q, config.k, config.v, config.o
       )
 
@@ -1176,9 +1304,11 @@ final class MultiHeadFFITests: XCTestCase {
       let nonZeroCount = outputData.filter { abs($0) > 1e-8 }.count
       let nonZeroRatio = Double(nonZeroCount) / Double(totalElements)
 
-      print("  Success: \(success), NaN: \(hasNaN), Inf: \(hasInf), NonZero: \(String(format: "%.1f", nonZeroRatio * 100))%")
+      print(
+        "  Success: \(success), NaN: \(hasNaN), Inf: \(hasInf), NonZero: \(String(format: "%.1f", nonZeroRatio * 100))%"
+      )
 
-      if success && !hasNaN && !hasInf && nonZeroRatio > 0.1 {
+      if success, !hasNaN, !hasInf, nonZeroRatio > 0.1 {
         print("  ✅ \(config.name) layout test passed")
       } else {
         print("  ❌ \(config.name) layout test failed")
@@ -1228,12 +1358,13 @@ final class MultiHeadFFITests: XCTestCase {
     XCTAssertEqual(result4, mfa_error_t(MFA_SUCCESS))
 
     // Execute with causal masking
-    let result = mfa_attention_forward(
+    let result = mfa_attention_forward_nomask(
       context, qBuffer, kBuffer, vBuffer, oBuffer,
       1, seqLen, seqLen, numHeads, headDim,
       1.0 / Float(headDim).squareRoot(),
       true, // causal masking enabled
-      mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+      mfa_precision_t(MFA_PRECISION_FP32), mfa_precision_t(MFA_PRECISION_FP32),
+      mfa_precision_t(MFA_PRECISION_FP32),
       false, false, false, false
     )
 
@@ -1262,8 +1393,8 @@ final class MultiHeadFFITests: XCTestCase {
     // Use a simple LCG for deterministic random numbers
     var rng = seed
     return (0..<count).map { _ in
-      rng = rng &* 1664525 &+ 1013904223 // LCG constants
-      let normalized = Float(rng % 1000000) / 1000000.0 // Normalize to [0, 1]
+      rng = rng &* 1_664_525 &+ 1_013_904_223 // LCG constants
+      let normalized = Float(rng % 1_000_000) / 1_000_000.0 // Normalize to [0, 1]
       return (normalized - 0.5) * 2.0 // Convert to [-1, 1]
     }
   }

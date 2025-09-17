@@ -115,7 +115,7 @@ final class MFAFFITests: XCTestCase {
     let testCases = [
       (seqLen: 4, headDim: 4, name: "tiny"),
       (seqLen: 64, headDim: 64, name: "small"),
-      (seqLen: 128, headDim: 64, name: "medium")
+      (seqLen: 128, headDim: 64, name: "medium"),
     ]
 
     for testCase in testCases {
@@ -142,7 +142,7 @@ final class MFAFFITests: XCTestCase {
     // Start with small sizes for FP16 due to known issues
     let testCases = [
       (seqLen: 4, headDim: 4, name: "tiny"),
-      (seqLen: 32, headDim: 32, name: "small")
+      (seqLen: 32, headDim: 32, name: "small"),
     ]
 
     for testCase in testCases {
@@ -169,7 +169,7 @@ final class MFAFFITests: XCTestCase {
     // Start with small sizes for BF16 due to known issues
     let testCases = [
       (seqLen: 4, headDim: 4, name: "tiny"),
-      (seqLen: 32, headDim: 32, name: "small")
+      (seqLen: 32, headDim: 32, name: "small"),
     ]
 
     for testCase in testCases {
@@ -199,7 +199,7 @@ final class MFAFFITests: XCTestCase {
       (seqLen: 64, headDim: 32, name: "64x32"),
       (seqLen: 128, headDim: 128, name: "128x128"),
       (seqLen: 256, headDim: 64, name: "256x64"),
-      (seqLen: 512, headDim: 64, name: "512x64")
+      (seqLen: 512, headDim: 64, name: "512x64"),
     ]
 
     for testCase in testCases {
@@ -228,7 +228,7 @@ final class MFAFFITests: XCTestCase {
 
     // Test different input patterns that might reveal bugs
     let patterns = [
-      "gaussian", "uniform", "sequential", "alternating", "sparse"
+      "gaussian", "uniform", "sequential", "alternating", "sparse",
     ]
 
     for pattern in patterns {
@@ -313,7 +313,7 @@ final class MFAFFITests: XCTestCase {
     let testCases = [
       (seqLen: 1, headDim: 1, name: "1x1"),
       (seqLen: 1, headDim: 4, name: "1x4"),
-      (seqLen: 2, headDim: 2, name: "2x2")
+      (seqLen: 2, headDim: 2, name: "2x2"),
     ]
 
     for testCase in testCases {
@@ -346,7 +346,6 @@ final class MFAFFITests: XCTestCase {
     causal: Bool = false,
     softmaxScale: Float? = nil
   ) throws {
-
     let elementCount = Int(seqLen * UInt32(headDim))
     let tensorSize = elementCount * 4 // FP32 bytes
 
@@ -382,7 +381,7 @@ final class MFAFFITests: XCTestCase {
     let scale = softmaxScale ?? (1.0 / sqrt(Float(headDim)))
 
     // Run attention
-    let attentionResult = mfa_attention_forward(
+    let attentionResult = mfa_attention_forward_nomask(
       context,
       qBuffer, kBuffer, vBuffer, outBuffer,
       1, // batch_size
@@ -401,8 +400,8 @@ final class MFAFFITests: XCTestCase {
     XCTAssertEqual(attentionResult, Int32(MFA_SUCCESS), "\(testName): Attention computation failed")
 
     // Validate output quality
-    let nanCount = outData.filter { $0.isNaN }.count
-    let infCount = outData.filter { $0.isInfinite }.count
+    let nanCount = outData.filter(\.isNaN).count
+    let infCount = outData.filter(\.isInfinite).count
     let zeroCount = outData.filter { $0 == 0.0 }.count
     let nonZeroCount = outData.filter { $0 != 0.0 }.count
 
@@ -438,7 +437,6 @@ final class MFAFFITests: XCTestCase {
     precision: Int32,
     testName: String
   ) throws {
-
     let elementCount = Int(seqLen * UInt32(headDim))
     let tensorSize = elementCount * 4 // FP32 bytes
 
@@ -504,7 +502,7 @@ final class MFAFFITests: XCTestCase {
       if let outBuffer { mfa_destroy_buffer(outBuffer) }
     }
 
-    let attentionResult = mfa_attention_forward(
+    let attentionResult = mfa_attention_forward_nomask(
       context,
       qBuffer, kBuffer, vBuffer, outBuffer,
       1, seqLen, seqLen, 1, headDim,
@@ -544,7 +542,10 @@ final class MFAFFITests: XCTestCase {
     } else {
       // For minimal sizes, verify output is finite and reasonable
       XCTAssertTrue(stdDev >= 0.0, "\(testName): Standard deviation should be non-negative")
-      XCTAssertTrue(output.allSatisfy { $0.isFinite }, "\(testName): All outputs should be finite for minimal size")
+      XCTAssertTrue(
+        output.allSatisfy(\.isFinite),
+        "\(testName): All outputs should be finite for minimal size"
+      )
     }
 
     XCTAssertLessThan(abs(mean), 10.0, "\(testName): Output mean is too extreme")
@@ -557,13 +558,17 @@ final class MFAFFITests: XCTestCase {
       XCTAssertGreaterThan(maxVal - minVal, 0.001, "\(testName): Output range is too narrow")
     } else {
       // For minimal sizes, just verify the range is non-negative
-      XCTAssertGreaterThanOrEqual(maxVal - minVal, 0.0, "\(testName): Output range should be non-negative")
+      XCTAssertGreaterThanOrEqual(
+        maxVal - minVal,
+        0.0,
+        "\(testName): Output range should be non-negative"
+      )
     }
   }
 
   func validatePatternResults(output: [Float], pattern: String, testName: String) {
-    let nanCount = output.filter { $0.isNaN }.count
-    let infCount = output.filter { $0.isInfinite }.count
+    let nanCount = output.filter(\.isNaN).count
+    let infCount = output.filter(\.isInfinite).count
 
     XCTAssertEqual(nanCount, 0, "\(testName): Pattern \(pattern) produced NaN values")
     XCTAssertEqual(infCount, 0, "\(testName): Pattern \(pattern) produced Inf values")
@@ -572,11 +577,19 @@ final class MFAFFITests: XCTestCase {
     switch pattern {
     case "sparse":
       let nonZeroCount = output.filter { abs($0) > 1e-6 }.count
-      XCTAssertGreaterThan(nonZeroCount, 0, "\(testName): Sparse pattern should produce some non-zero output")
+      XCTAssertGreaterThan(
+        nonZeroCount,
+        0,
+        "\(testName): Sparse pattern should produce some non-zero output"
+      )
 
     case "uniform", "gaussian":
       let range = (output.max() ?? 0) - (output.min() ?? 0)
-      XCTAssertGreaterThan(range, 0.1, "\(testName): \(pattern) pattern should produce varied output")
+      XCTAssertGreaterThan(
+        range,
+        0.1,
+        "\(testName): \(pattern) pattern should produce varied output"
+      )
 
     default:
       break
