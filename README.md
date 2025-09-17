@@ -6,16 +6,38 @@ A universal C Foreign Function Interface (FFI) for the Metal Flash Attention lib
 
 This library bridges the high-performance Metal Flash Attention implementation to other programming languages through a clean C API. It maintains zero-copy semantics by working directly with Metal buffers and provides the same interface patterns as Flash Attention 3 or PyTorch SDPA.
 
+🍎 **NOTE**: This project is mostly a proof-of-concept to answer the age-old question, _"Can **I** accomplish that?"_
+
+### When do I use your library?
+
+- If you are stuck with PyTorch
+  - You know who you are 🙈
+- If you run models with **long** sequence lengths and would like to experiment with potential performance improvement
+  - Long-context text models and high-resolution image models
+  - In theory, video models also benefit, but this hasn't been verified
+- If you require **more accuracy** than PyTorch SDPA can provide
+  - Some image and video models with eg. Diffusers do not produce correct outputs on PyTorch, but do with UMFA
+- If you **don't** require accuracy but instead require **memory efficiency** similar to what SageAttention provides NVIDIA users
+  - A lower memory system might be able to run a larger model than usual, for example
+
+### When do I NOT use your library?
+
+- If you can make use of [MLX](https://github.com/ml-explore/mlx) instead, you should do this
+- If there's a way to use [NVIDIA](https://nvidia.com) hardware
+  - However, Apple GPU is **more efficient** than NVIDIA GPU for the same workload, they just don't make a super large one yet. **YET**.
+
 ## Features
 
 ### Language support
 
 - **Rust FFI**: 1135 GINSTRS/s (matches native Swift performance)
 - **Objective-C FFI**: 1148 GINSTRS/s peak performance
-- **Python FFI**: Zero-copy generic Python integration, compatible with PyTorch and others
+- **Python FFI**: Zero-copy generic Python integration, compatible with PyTorch and matches Rust & Objective-C performance
 - **PyTorch Custom Op**: Experimental deep integration with PyTorch via PrivateUse1 backend
 - **Zero-copy tensor operations** supported by MFABridge layer for low-latency integration
 - **Language agnostic**: C interface works with Rust, Python, Julia, etc.
+
+See the [EXAMPLES](/docs/EXAMPLES.md) document for more details on integrations.
 
 ### Advanced features
 
@@ -104,9 +126,16 @@ Higher resolutions and longer sequence lengths benefit **the most**.
 
 More work can be done to identify performance loss in the baseline non-quantised results.
 
-## Integration with Other Languages
+## Roadmap
 
-See [EXAMPLES](/docs/EXAMPLES.md) document for integration guides.
+- Make it simpler to install this package, is probably step number one eg. providing precompiled wheels
+- Multihead backward pass. Currently not exposed through FFI to eg. Python callers, only available in Swift atm
+- Better abstraction for downstream use, eg. helpers for quantised buffers instead of having to reimplement in each adapter language
+- INT4 fused runtime quant w/ GPU bytepacking for improved performance in cases where CPU overhead dominates over mem bw constraints
+- Per-channel asymmetric quantisation to provide more options for granularity over the tensorWise, blockWise and rowWise impl we've got currently
+- Testing the gains from GLUON and other heuristics that don't exist in the original MFA repo on newer hardware, maybe someone buys me an M4 🤪
+- Attention dropout, low priority, as I have no personal use-case for it
+- Experimentation with newer attention strategies as they become available (_open a feature request!_)
 
 ## Contributing
 
@@ -114,6 +143,54 @@ See [EXAMPLES](/docs/EXAMPLES.md) document for integration guides.
 2. Create your feature branch
 3. Ensure tests pass: `swift test`
 4. Submit a pull request
+
+## Citation
+
+If you use this library in your research, please cite both this repository and the original Metal Flash Attention codebase:
+
+**This Repository**
+
+```
+@misc{universal-metal-flash-attention,
+  author = {bghira},
+  title = {Universal Metal Flash Attention},
+  year = {2025},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/bghira/universal-metal-flash-attention}},
+    note = {Accessed: 2025-10-01}
+}
+```
+
+**Metal Flash Attention**
+
+```
+@misc{metal-flash-attention,
+  author = {Philip Turner},
+    title = {Metal Flash Attention},
+    year = {2024},  
+    publisher = {GitHub},
+    journal = {GitHub repository},
+    howpublished = {\url{https://github.com/philipturner/metal-flash-attention}},
+    note = {Accessed: 2025-10-01}
+}
+```
+
+## Acknowledgements
+
+Thanks to [Philip Turner](https://github.com/philipturner) for creating and so generously open-sourcing the original Metal Flash Attention library under the MIT license.
+
+His work has inspired this project and it would not have been possible without this foundation.
+
+All of our interfaces rely on and are derived from his original work.
+
+Thanks to [Mario Lezcano Casado](https://github.com/lezcano) for publishing the work on [GLUON](https://github.com/triton-lang/triton/blob/main/python/examples/gluon/01-attention-forward.py).
+
+This work has inspired our quantised attention implementation; I have adapted some of his project's ideas to fit our needs.
+
+The initial project framework was coded with [Claude Code](https://claude.ai), as I'd never worked on Swift before.
+
+Further debugging of the multi-head quantised attention kernel and backward implementation were assisted by ChatGPT-5 Codex.
 
 ## License
 
