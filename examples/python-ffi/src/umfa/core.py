@@ -7,7 +7,7 @@ zero-copy numpy integration, and Flash Attention 3 compatible API.
 
 import ctypes
 import weakref
-from typing import Any, Optional, Tuple, Union
+from typing import Any, NamedTuple, Optional, Tuple, Union
 
 import numpy as np
 
@@ -17,6 +17,13 @@ from ._ffi import (
     MFA_PRECISION_FP32,
     MFA_PRECISION_INT4,
     MFA_PRECISION_INT8,
+    MFA_MASK_SCALAR_BF16,
+    MFA_MASK_SCALAR_BYTE,
+    MFA_MASK_SCALAR_FP16,
+    MFA_MASK_SCALAR_FP32,
+    MFA_MASK_TYPE_ADDITIVE,
+    MFA_MASK_TYPE_BOOL,
+    MFA_MASK_TYPE_NONE,
     MFAError,
     _check_error,
     _lib,
@@ -179,12 +186,90 @@ def _parse_precision(precision: Precision) -> int:
     return precision_map[precision_str]
 
 
+try:
+    _BF16_DTYPE = np.dtype("bfloat16")
+except TypeError:
+    _BF16_DTYPE = None
+
+
+class _MaskMetadata(NamedTuple):
+    array: np.ndarray
+    ptr: ctypes.c_void_p
+    size_bytes: int
+    shape: ctypes.Array
+    strides: ctypes.Array
+    ndim: int
+    mask_type: int
+    mask_scalar: int
+
+
+def _prepare_mask_metadata(mask: FloatArray, target_shape: Tuple[int, ...]) -> _MaskMetadata:
+    """Prepare contiguous mask array and metadata for the FFI call."""
+
+    mask_arr = np.asarray(mask)
+
+    mask_type = MFA_MASK_TYPE_ADDITIVE
+    mask_scalar = MFA_MASK_SCALAR_FP32
+
+    if mask_arr.dtype == np.bool_:
+        mask_type = MFA_MASK_TYPE_BOOL
+        mask_scalar = MFA_MASK_SCALAR_BYTE
+        mask_arr = mask_arr.astype(np.bool_, copy=False)
+    elif mask_arr.dtype == np.float16:
+        mask_scalar = MFA_MASK_SCALAR_FP16
+    elif _BF16_DTYPE is not None and mask_arr.dtype == _BF16_DTYPE:
+        mask_scalar = MFA_MASK_SCALAR_BF16
+    elif mask_arr.dtype == np.float32:
+        mask_scalar = MFA_MASK_SCALAR_FP32
+    elif mask_arr.dtype == np.float64:
+        mask_scalar = MFA_MASK_SCALAR_FP32
+        mask_arr = mask_arr.astype(np.float32)
+    elif mask_arr.dtype in (np.int8, np.uint8, np.int16, np.uint16):
+        mask_type = MFA_MASK_TYPE_BOOL
+        mask_scalar = MFA_MASK_SCALAR_BYTE
+        mask_arr = mask_arr.astype(np.bool_)
+    else:
+        raise ValueError(
+            "Unsupported attention mask dtype. Use bool for binary masks or "
+            "float16/bfloat16/float32 values for additive masks."
+        )
+
+    try:
+        mask_broadcast = np.broadcast_to(mask_arr, target_shape)
+    except ValueError as exc:
+        raise ValueError(
+            f"Attention mask with shape {mask_arr.shape} cannot broadcast to {target_shape}."
+        ) from exc
+
+    mask_view = np.ascontiguousarray(mask_broadcast)
+
+    shape_list = [int(dim) for dim in mask_view.shape]
+    stride_list = [int(stride // mask_view.itemsize) for stride in mask_view.strides]
+
+    shape_buf = (ctypes.c_int64 * len(shape_list))(*shape_list)
+    stride_buf = (ctypes.c_int64 * len(stride_list))(*stride_list)
+
+    ptr = ctypes.c_void_p(mask_view.ctypes.data)
+
+    return _MaskMetadata(
+        array=mask_view,
+        ptr=ptr,
+        size_bytes=mask_view.nbytes,
+        shape=shape_buf,
+        strides=stride_buf,
+        ndim=len(shape_list),
+        mask_type=mask_type,
+        mask_scalar=mask_scalar,
+    )
+
+
 def flash_attention_forward(
     context: MFAContext,
     q: FloatArray,
     k: FloatArray,
     v: FloatArray,
     *,
+    attn_mask: Optional[FloatArray] = None,
     causal: bool = False,
     softmax_scale: Optional[float] = None,
     input_precision: Precision = "fp16",
@@ -199,6 +284,10 @@ def flash_attention_forward(
         q: Query tensor [batch_size, seq_len_q, num_heads, head_dim] or [seq_len_q, head_dim] for single head
         k: Key tensor [batch_size, seq_len_kv, num_heads, head_dim] or [seq_len_kv, head_dim] for single head
         v: Value tensor [batch_size, seq_len_kv, num_heads, head_dim] or [seq_len_kv, head_dim] for single head
+        attn_mask: Optional boolean or additive mask. Accepts shapes that broadcast to
+            [batch_size, seq_len_q, num_heads, seq_len_kv] (4D inputs) or [seq_len_q, seq_len_kv]
+            (2D inputs). Boolean masks mark masked positions with True. Additive masks supply
+            precomputed bias values.
         causal: Whether to apply causal (lower triangular) mask
         softmax_scale: Scaling factor for attention scores (default: 1/√head_dim)
         input_precision: Precision for Q, K, V tensors
@@ -261,6 +350,16 @@ def flash_attention_forward(
     intermediate_prec = _parse_precision(intermediate_precision)
     output_prec = _parse_precision(output_precision)
 
+    mask_meta: Optional[_MaskMetadata] = None
+    if attn_mask is not None:
+        target_shape = (seq_len_q, seq_len_kv) if q.ndim == 2 else (
+            batch_size,
+            seq_len_q,
+            num_heads,
+            seq_len_kv,
+        )
+        mask_meta = _prepare_mask_metadata(attn_mask, target_shape)
+
     # Create output array
     output = np.zeros_like(q)
 
@@ -293,6 +392,13 @@ def flash_attention_forward(
                 False,  # transpose_k
                 False,  # transpose_v
                 False,  # transpose_o
+                mask_meta.ptr if mask_meta else None,
+                mask_meta.size_bytes if mask_meta else 0,
+                mask_meta.shape if mask_meta else None,
+                mask_meta.strides if mask_meta else None,
+                mask_meta.ndim if mask_meta else 0,
+                mask_meta.mask_type if mask_meta else MFA_MASK_TYPE_NONE,
+                mask_meta.mask_scalar if mask_meta else MFA_MASK_SCALAR_BYTE,
             )
         )
     finally:
@@ -318,7 +424,8 @@ def attention(
     Args:
         q, k, v: Query, key, value tensors
         context: Optional MFA context (created automatically if None)
-        **kwargs: Additional arguments passed to flash_attention_forward
+        **kwargs: Additional keyword arguments forwarded to ``flash_attention_forward``
+                  (e.g. ``causal=True`` or ``attn_mask=mask``)
 
     Returns:
         Attention output tensor

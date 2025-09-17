@@ -1,4 +1,3 @@
-use std::time::Instant;
 use crate::*;
 
 pub struct BenchmarkConfig {
@@ -52,7 +51,7 @@ pub fn benchmark_attention(config: BenchmarkConfig) -> Result<BenchmarkResult, B
     for _ in 0..config.num_runs {
         let result = run_attention_forward(&context, &q_buffer, &k_buffer, &v_buffer, &o_buffer, &config);
 
-        if result != mfa_error_t::MFA_SUCCESS {
+        if result != MFA_SUCCESS as mfa_error_t {
             return Err(format!("Attention forward pass failed: {:?}", result).into());
         }
 
@@ -104,13 +103,20 @@ fn run_attention_forward(
             config.head_dim as u16,                 // head_dim
             1.0 / (config.head_dim as f32).sqrt(),  // softmax_scale
             config.use_causal,                      // causal masking!
-            mfa_precision_t::MFA_PRECISION_FP32,     // input_precision (to match Swift)
-            mfa_precision_t::MFA_PRECISION_FP32,     // intermediate_precision (to match Swift)
-            mfa_precision_t::MFA_PRECISION_FP32,     // output_precision (to match Swift)
+            MFA_PRECISION_FP32 as mfa_precision_t,     // input_precision (to match Swift)
+            MFA_PRECISION_FP32 as mfa_precision_t,     // intermediate_precision (to match Swift)
+            MFA_PRECISION_FP32 as mfa_precision_t,     // output_precision (to match Swift)
             false,                                  // transpose_q
             false,                                  // transpose_k
             false,                                  // transpose_v
             false,                                  // transpose_o
+            std::ptr::null(),                       // mask_ptr
+            0,                                       // mask_size_bytes
+            std::ptr::null(),                       // mask_shape
+            std::ptr::null(),                       // mask_strides
+            0,                                       // mask_ndim
+            MFA_MASK_TYPE_NONE as mfa_mask_type_t,           // mask_type
+            MFA_MASK_SCALAR_BYTE as mfa_mask_scalar_t,       // mask_scalar_type
         )
     }
 }

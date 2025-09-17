@@ -71,7 +71,7 @@ class MetalSDPA:
     def __init__(self):
         self.context = umfa.MFAContext()
 
-    def __call__(self, query, key, value, is_causal=False):
+    def __call__(self, query, key, value, is_causal=False, attn_mask=None):
         # Convert PyTorch tensors to numpy (zero-copy when possible)
         q_np = query.detach().cpu().numpy()
         k_np = key.detach().cpu().numpy()
@@ -81,6 +81,7 @@ class MetalSDPA:
         output_np = umfa.flash_attention_forward(
             self.context, q_np, k_np, v_np,
             causal=is_causal,
+            attn_mask=attn_mask.detach().cpu().numpy() if attn_mask is not None else None,
             input_precision="fp16" if query.dtype == torch.float16 else "fp32"
         )
 
@@ -170,6 +171,7 @@ Main attention computation function.
 
 - `context`: MFA context object
 - `q, k, v`: Input numpy arrays with shape `[seq_len, head_dim]`
+- `attn_mask`: Optional boolean or additive mask (broadcastable to `[seq_len_q, seq_len_kv]` or `[batch, seq_len_q, heads, seq_len_kv]`)
 - `causal`: Boolean, enables causal masking (default: False)
 - `input_precision`: "fp16", "fp32" (default: "fp16")
 - `intermediate_precision`: "fp16", "fp32" (default: "fp16")
@@ -187,6 +189,11 @@ Convenience function that manages context automatically.
 ```python
 # Simple one-liner (creates and manages context internally)
 output = umfa.attention(q, k, v, causal=True, input_precision="fp32")
+
+# Apply an explicit boolean mask
+import numpy as np
+mask = np.triu(np.ones((q.shape[0], q.shape[0]), dtype=bool), k=64)
+masked_output = umfa.attention(q, k, v, attn_mask=mask)
 ```
 
 ### Utility Functions

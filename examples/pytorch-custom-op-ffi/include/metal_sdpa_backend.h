@@ -34,6 +34,23 @@ enum class OutputPrecision {
     BF16   // BFloat16
 };
 
+// Mask interoperability enums (must match mfa_ffi.h)
+enum MFAMaskType : int {
+    MFA_MASK_TYPE_NONE = 0,
+    MFA_MASK_TYPE_BOOL = 1,
+    MFA_MASK_TYPE_ADDITIVE = 2
+};
+
+enum MFAMaskScalarType : int {
+    MFA_MASK_SCALAR_BYTE = 0,
+    MFA_MASK_SCALAR_FP16 = 1,
+    MFA_MASK_SCALAR_BF16 = 2,
+    MFA_MASK_SCALAR_FP32 = 3
+};
+
+using mfa_mask_type_t = int;
+using mfa_mask_scalar_t = int;
+
 // Hybrid quantization strategy types
 enum class HybridStrategy {
     PERFORMANCE_FIRST,  // Prioritize speed over accuracy
@@ -279,7 +296,14 @@ extern "C" {
         mfa_precision_t input_precision,
         mfa_precision_t intermediate_precision,
         mfa_precision_t output_precision,
-        bool transpose_q, bool transpose_k, bool transpose_v, bool transpose_o
+        bool transpose_q, bool transpose_k, bool transpose_v, bool transpose_o,
+        const void* mask_ptr,
+        size_t mask_size_bytes,
+        const int64_t* mask_shape,
+        const int64_t* mask_strides,
+        uint32_t mask_ndim,
+        mfa_mask_type_t mask_type,
+        mfa_mask_scalar_t mask_scalar_type
     );
 
 
@@ -291,7 +315,14 @@ extern "C" {
         uint32_t num_heads, uint16_t head_dim, float softmax_scale,
         bool causal,
         const char* input_precision, const char* intermediate_precision, const char* output_precision,
-        bool transpose_q, bool transpose_k, bool transpose_v, bool transpose_o
+        bool transpose_q, bool transpose_k, bool transpose_v, bool transpose_o,
+        const void* mask_ptr,
+        size_t mask_size_bytes,
+        const int64_t* mask_shape,
+        const int64_t* mask_strides,
+        uint32_t mask_ndim,
+        mfa_mask_type_t mask_type,
+        mfa_mask_scalar_t mask_scalar_type
     );
 
     mfa_error_t mfa_attention_forward_quantized(
@@ -378,7 +409,7 @@ extern "C" {
         float v_scale, int32_t v_zero_point,  // Not used in new API
         int32_t q_precision,   // Input precision: 0=FP16, 1=BF16, 2=FP32
         int32_t k_precision,   // Target quantization precision: 3=INT8, 4=INT4
-        int32_t v_precision,   // Quantization mode: 0=tensorWise, 2=blockWise
+        int32_t v_precision,   // Quantization mode: 0=tensorWise, 2=blockwise
         int32_t output_precision,
         bool transpose_q, bool transpose_k, bool transpose_v, bool transpose_o
     );
@@ -394,7 +425,7 @@ extern "C" {
         float v_scale, int32_t v_zero_point,  // Not used in new API
         int32_t q_precision,   // Input precision: 0=FP16, 1=BF16, 2=FP32
         int32_t k_precision,   // Target quantization precision: 3=INT8, 4=INT4
-        int32_t v_precision    // Quantization mode: 0=tensorWise, 2=blockWise
+        int32_t v_precision    // Quantization mode: 0=tensorWise, 2=blockwise
     );
 
     bool mfa_is_device_supported(void);
@@ -464,6 +495,7 @@ private:
         const torch::Tensor& q,
         const torch::Tensor& k,
         const torch::Tensor& v,
+        const c10::optional<torch::Tensor>& attn_mask,
         bool is_causal,
         float softmax_scale
     );
@@ -472,6 +504,7 @@ private:
         torch::Tensor q,
         torch::Tensor k,
         torch::Tensor v,
+        const c10::optional<torch::Tensor>& attn_mask,
         bool is_causal,
         float softmax_scale,
         bool use_mps_buffers

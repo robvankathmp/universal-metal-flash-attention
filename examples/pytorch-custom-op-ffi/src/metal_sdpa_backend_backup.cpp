@@ -841,7 +841,9 @@ torch::Tensor MetalSDPABackend::call_swift_flash_attention(
         batch_size, seq_len_q, seq_len_kv, num_heads, head_dim,
         softmax_scale, is_causal,
         precision, precision, precision,  // input, intermediate, output precision
-        false, false, false, false       // transpose flags
+        false, false, false, false,       // transpose flags
+        nullptr, 0, nullptr, nullptr, 0,
+        MFA_MASK_TYPE_NONE, MFA_MASK_SCALAR_BYTE
     );
 
     // Clean up buffers

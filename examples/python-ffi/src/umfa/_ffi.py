@@ -27,6 +27,17 @@ MFA_PRECISION_FP32 = 2
 MFA_PRECISION_INT8 = 3
 MFA_PRECISION_INT4 = 4
 
+# Mask types
+MFA_MASK_TYPE_NONE = 0
+MFA_MASK_TYPE_BOOL = 1
+MFA_MASK_TYPE_ADDITIVE = 2
+
+# Mask scalar encodings
+MFA_MASK_SCALAR_BYTE = 0
+MFA_MASK_SCALAR_FP16 = 1
+MFA_MASK_SCALAR_BF16 = 2
+MFA_MASK_SCALAR_FP32 = 3
+
 # Type aliases
 mfa_error_t = ctypes.c_int32
 mfa_precision_t = ctypes.c_int32
@@ -134,6 +145,13 @@ def _load_library():
         ctypes.c_bool,  # transpose_k
         ctypes.c_bool,  # transpose_v
         ctypes.c_bool,  # transpose_o
+        ctypes.c_void_p,  # mask_ptr
+        ctypes.c_size_t,  # mask_size_bytes
+        ctypes.POINTER(ctypes.c_int64),  # mask_shape
+        ctypes.POINTER(ctypes.c_int64),  # mask_strides
+        ctypes.c_uint32,  # mask_ndim
+        ctypes.c_int32,  # mask_type
+        ctypes.c_int32,  # mask_scalar_type
     ]
     lib.mfa_attention_forward.restype = mfa_error_t
 
@@ -225,6 +243,13 @@ __all__ = [
     "MFA_PRECISION_FP32",
     "MFA_PRECISION_INT8",
     "MFA_PRECISION_INT4",
+    "MFA_MASK_TYPE_NONE",
+    "MFA_MASK_TYPE_BOOL",
+    "MFA_MASK_TYPE_ADDITIVE",
+    "MFA_MASK_SCALAR_BYTE",
+    "MFA_MASK_SCALAR_FP16",
+    "MFA_MASK_SCALAR_BF16",
+    "MFA_MASK_SCALAR_FP32",
     "mfa_error_t",
     "mfa_precision_t",
     "mfa_context_t",

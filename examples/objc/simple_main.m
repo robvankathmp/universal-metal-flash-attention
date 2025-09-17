@@ -101,7 +101,9 @@ int main() {
                                 MFA_PRECISION_FP32,       // input_precision
                                 MFA_PRECISION_FP32,       // intermediate_precision
                                 MFA_PRECISION_FP32,       // output_precision
-                                false, false, false, false); // transpose flags
+                                false, false, false, false,
+                                NULL, 0, NULL, NULL, 0,
+                                MFA_MASK_TYPE_NONE, MFA_MASK_SCALAR_BYTE); // no mask
         }
 
         // Benchmark runs (5 runs like Rust)
@@ -118,7 +120,9 @@ int main() {
                                                      MFA_PRECISION_FP32,       // input_precision
                                                      MFA_PRECISION_FP32,       // intermediate_precision
                                                      MFA_PRECISION_FP32,       // output_precision
-                                                     false, false, false, false); // transpose flags
+                                                     false, false, false, false,
+                                                     NULL, 0, NULL, NULL, 0,
+                                                     MFA_MASK_TYPE_NONE, MFA_MASK_SCALAR_BYTE); // no mask
 
             if (result != MFA_SUCCESS) {
                 printf("❌ Attention forward failed for %s: %d\n", configs[i].name, result);

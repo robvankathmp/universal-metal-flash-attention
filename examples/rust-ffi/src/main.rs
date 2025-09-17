@@ -51,7 +51,7 @@ impl MfaContext {
     fn new() -> Result<Self, MfaError> {
         let mut context: *mut c_void = ptr::null_mut();
         let result = unsafe { mfa_create_context(&mut context) };
-        if result != mfa_error_t::MFA_SUCCESS {
+        if result != MFA_SUCCESS as mfa_error_t {
             Err(mfa_error_from_code(result))
         } else {
             Ok(MfaContext(context))
@@ -78,7 +78,7 @@ impl MfaBuffer {
     fn new(context: &MfaContext, size: usize) -> Result<Self, MfaError> {
         let mut buffer: *mut c_void = ptr::null_mut();
         let result = unsafe { mfa_create_buffer(context.as_ptr(), size, &mut buffer) };
-        if result != mfa_error_t::MFA_SUCCESS {
+        if result != MFA_SUCCESS as mfa_error_t {
             Err(mfa_error_from_code(result))
         } else {
             Ok(MfaBuffer(buffer))
@@ -160,17 +160,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             head_dim as u16,                    // head_dim
             1.0 / (head_dim as f32).sqrt(),     // softmax_scale
             true,                               // causal masking enabled!
-            mfa_precision_t::MFA_PRECISION_FP16, // input_precision (FP16)
-            mfa_precision_t::MFA_PRECISION_FP16, // intermediate_precision (FP16)
-            mfa_precision_t::MFA_PRECISION_FP16, // output_precision (FP16)
+            MFA_PRECISION_FP16 as mfa_precision_t, // input_precision (FP16)
+            MFA_PRECISION_FP16 as mfa_precision_t, // intermediate_precision (FP16)
+            MFA_PRECISION_FP16 as mfa_precision_t, // output_precision (FP16)
             false,                              // transpose_q
             false,                              // transpose_k
             false,                              // transpose_v
             false,                              // transpose_o
+            std::ptr::null(),                   // mask_ptr
+            0,                                   // mask_size_bytes
+            std::ptr::null(),                   // mask_shape
+            std::ptr::null(),                   // mask_strides
+            0,                                   // mask_ndim
+            MFA_MASK_TYPE_NONE as mfa_mask_type_t,       // mask_type
+            MFA_MASK_SCALAR_BYTE as mfa_mask_scalar_t,   // mask_scalar_type
         )
     };
 
-    if attention_result == mfa_error_t::MFA_SUCCESS {
+    if attention_result == MFA_SUCCESS as mfa_error_t {
         println!("✅ Causal attention forward pass completed successfully!");
         println!("✅ Our causal masking implementation works in Rust!");
     } else {

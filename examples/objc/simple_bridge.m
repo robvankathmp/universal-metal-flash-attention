@@ -100,7 +100,9 @@ extern bool mfa_is_device_supported();
                                               (mfa_precision_t)intermediatePrecision,
                                               (mfa_precision_t)outputPrecision,
                                               transposeQ ? true : false, transposeK ? true : false,
-                                              transposeV ? true : false, transposeO ? true : false);
+                                              transposeV ? true : false, transposeO ? true : false,
+                                              NULL, 0, NULL, NULL, 0,
+                                              MFA_MASK_TYPE_NONE, MFA_MASK_SCALAR_BYTE);
 
     return result == MFA_SUCCESS ? 0.0 : -1.0;  // Return success/failure
 }

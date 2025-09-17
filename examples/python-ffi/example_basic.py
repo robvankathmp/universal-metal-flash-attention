@@ -54,8 +54,16 @@ def main():
                 ctx, q, k, v, causal=False, input_precision="fp16"
             )
 
+            # Apply an explicit boolean mask (upper-triangular padding)
+            mask = np.triu(np.ones((seq_len, seq_len), dtype=bool), k=seq_len // 4)
+            output_masked = umfa.flash_attention_forward(
+                ctx, q, k, v, attn_mask=mask, causal=False, input_precision="fp16"
+            )
+
         print(f"✅ Output shape: {output1.shape}, dtype: {output1.dtype}")
         print(f"✅ Output range: [{output1.min():.4f}, {output1.max():.4f}]")
+        masked_diff = np.mean(np.abs(output1 - output_masked))
+        print(f"✅ Masked output differs from unmasked by {masked_diff:.6f}")
 
         # Method 2: Using convenience function
         print("\n🚀 Running attention with convenience function...")
@@ -93,6 +101,7 @@ def main():
     print("   • Zero-copy operation: no data copying between Python and Metal")
     print("   • FP16 precision provides optimal speed/memory tradeoffs")
     print("   • Causal masking supported for autoregressive models")
+    print("   • Boolean and additive attention masks supported for custom sparsity")
     print("   • Maintains 4400+ GINSTRS/sec MFA performance")
 
     return 0

@@ -30,7 +30,7 @@ public func mfa_attention_forward_quantized_direct(
     _ vZeroPoint: Int32,   // Not used in new API
     _ qPrecision: Int32,   // Input precision: 0=FP16, 1=BF16, 2=FP32
     _ kPrecision: Int32,   // Target quantization precision: 3=INT8, 4=INT4
-    _ vPrecision: Int32,   // Quantization mode: 0=tensorWise, 2=blockWise
+    _ vPrecision: Int32,   // Quantization mode: 0=tensorWise, 2=blockwise
     _ outputPrecision: Int32,
     _ transposeQ: Bool,
     _ transposeK: Bool,
@@ -67,7 +67,7 @@ public func mfa_attention_forward_quantized_direct(
     func toQuantizationMode(_ mode: Int32) -> QuantizationMode {
       switch mode {
       case 0: return .tensorWise
-      case 2: return .blockWise(blockSize: 64)  // Use default block size for blockwise quantization
+      case 2: return .blockwise(blockSizeK: 64)  // Use default block size for blockwise quantization
       default: return .tensorWise  // Default to tensor-wise
       }
     }
@@ -186,7 +186,7 @@ public func mfa_multihead_attention_quantized_direct(
     _ vZeroPoint: Int32,   // Not used in new API
     _ qPrecision: Int32,   // Input precision: 0=FP16, 1=BF16, 2=FP32
     _ kPrecision: Int32,   // Target quantization precision: 3=INT8, 4=INT4
-    _ vPrecision: Int32    // Quantization mode: 0=tensorWise, 2=blockWise
+    _ vPrecision: Int32    // Quantization mode: 0=tensorWise, 2=blockwise
   ) -> Int32 {
 
     // Now delegates to the improved multi-head implementation with parallel head processing

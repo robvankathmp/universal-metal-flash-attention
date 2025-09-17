@@ -2,6 +2,7 @@
 #include "mps_utils.h"
 #include <torch/torch.h>
 #include <ATen/ATen.h>
+#include <ATen/ops/scaled_dot_product_attention_native.h>
 #include <torch/nn/functional.h>  // For torch::nn::functional::pad
 #include <c10/util/Exception.h>
 #include <mutex>
@@ -945,6 +946,7 @@ torch::Tensor MetalSDPABackend::call_swift_flash_attention_impl(
     torch::Tensor q_tensor,
     torch::Tensor k_tensor,
     torch::Tensor v_tensor,
+    const c10::optional<torch::Tensor>& attn_mask,
     bool is_causal,
     float softmax_scale,
     bool use_mps_buffers
@@ -1017,6 +1019,46 @@ torch::Tensor MetalSDPABackend::call_swift_flash_attention_impl(
     }
     if (batch_size > 1024) {
         throw std::runtime_error("Batch size too large (max 1024)");
+    }
+
+    const void* mask_ptr = nullptr;
+    size_t mask_size_bytes = 0;
+    std::vector<int64_t> mask_shape_vec;
+    std::vector<int64_t> mask_stride_vec;
+    uint32_t mask_ndim = 0;
+    mfa_mask_type_t mask_type = MFA_MASK_TYPE_NONE;
+    mfa_mask_scalar_t mask_scalar_type = MFA_MASK_SCALAR_BYTE;
+    torch::Tensor mask_cpu;
+
+    if (attn_mask.has_value() && attn_mask.value().defined()) {
+        mask_cpu = ensure_contiguous_cpu(attn_mask.value());
+
+        auto mask_dtype = mask_cpu.scalar_type();
+        if (mask_dtype == torch::kBool) {
+            mask_type = MFA_MASK_TYPE_BOOL;
+            mask_scalar_type = MFA_MASK_SCALAR_BYTE;
+        } else if (mask_dtype == torch::kFloat32) {
+            mask_type = MFA_MASK_TYPE_ADDITIVE;
+            mask_scalar_type = MFA_MASK_SCALAR_FP32;
+        } else if (mask_dtype == torch::kFloat16) {
+            mask_type = MFA_MASK_TYPE_ADDITIVE;
+            mask_scalar_type = MFA_MASK_SCALAR_FP16;
+        } else if (mask_dtype == torch::kBFloat16) {
+            mask_type = MFA_MASK_TYPE_ADDITIVE;
+            mask_scalar_type = MFA_MASK_SCALAR_BF16;
+        } else {
+            throw std::runtime_error("Unsupported attn_mask dtype for Metal Flash Attention");
+        }
+
+        mask_ptr = mask_cpu.data_ptr();
+        mask_size_bytes = mask_cpu.storage().nbytes();
+
+        auto mask_sizes = mask_cpu.sizes();
+        mask_shape_vec.assign(mask_sizes.begin(), mask_sizes.end());
+
+        auto mask_strides = mask_cpu.strides();
+        mask_stride_vec.assign(mask_strides.begin(), mask_strides.end());
+        mask_ndim = static_cast<uint32_t>(mask_shape_vec.size());
     }
 
     auto make_shape_vector = [](const torch::Tensor& tensor) {
@@ -1110,13 +1152,23 @@ torch::Tensor MetalSDPABackend::call_swift_flash_attention_impl(
     bind_tensor("value", v_tensor, v_buffer);
     bind_tensor("output", output, out_buffer);
 
+    const int64_t* mask_shape_ptr = mask_shape_vec.empty() ? nullptr : mask_shape_vec.data();
+    const int64_t* mask_stride_ptr = mask_stride_vec.empty() ? nullptr : mask_stride_vec.data();
+
     mfa_error_t result = mfa_attention_forward_str(
         MetalSDPABackend::swift_context_,
         q_buffer, k_buffer, v_buffer, out_buffer,
         batch_size, seq_len_q, seq_len_kv, num_heads, head_dim,
         softmax_scale, is_causal,
         precision_str.c_str(), precision_str.c_str(), precision_str.c_str(),
-        false, false, false, false
+        false, false, false, false,
+        mask_ptr,
+        mask_size_bytes,
+        mask_shape_ptr,
+        mask_stride_ptr,
+        mask_ndim,
+        mask_type,
+        mask_scalar_type
     );
 
     if (result != MFA_SUCCESS) {
@@ -1144,13 +1196,14 @@ torch::Tensor MetalSDPABackend::call_swift_flash_attention(
     const torch::Tensor& q,
     const torch::Tensor& k,
     const torch::Tensor& v,
+    const c10::optional<torch::Tensor>& attn_mask,
     bool is_causal,
     float softmax_scale
 ) {
     bool mps_candidate = q.device().is_mps() && k.device().is_mps() && v.device().is_mps();
     if (mps_candidate) {
         try {
-            return call_swift_flash_attention_impl(q, k, v, is_causal, softmax_scale, true);
+            return call_swift_flash_attention_impl(q, k, v, attn_mask, is_causal, softmax_scale, true);
         } catch (const std::exception& ex) {
             std::cout << "⚠️  MPS fast path unavailable: " << ex.what() << " -- falling back to CPU path" << std::endl;
         }
@@ -1159,7 +1212,11 @@ torch::Tensor MetalSDPABackend::call_swift_flash_attention(
     auto q_cpu = ensure_contiguous_cpu(q);
     auto k_cpu = ensure_contiguous_cpu(k);
     auto v_cpu = ensure_contiguous_cpu(v);
-    return call_swift_flash_attention_impl(q_cpu, k_cpu, v_cpu, is_causal, softmax_scale, false);
+    c10::optional<torch::Tensor> mask_cpu;
+    if (attn_mask.has_value()) {
+        mask_cpu = ensure_contiguous_cpu(attn_mask.value());
+    }
+    return call_swift_flash_attention_impl(q_cpu, k_cpu, v_cpu, mask_cpu, is_causal, softmax_scale, false);
 }
 
 
@@ -1182,8 +1239,24 @@ torch::Tensor MetalSDPABackend::scaled_dot_product_attention(
         std::cout << "Warning: Dropout not supported in Metal Flash Attention, ignoring dropout_p" << std::endl;
     }
 
-    if (attn_mask.has_value()) {
-        std::cout << "Warning: Custom attention mask not supported, using is_causal instead" << std::endl;
+    if (attn_mask.has_value() && attn_mask.value().defined()) {
+        auto mask_dtype = attn_mask.value().scalar_type();
+        if (mask_dtype != torch::kBool &&
+            mask_dtype != torch::kFloat32 &&
+            mask_dtype != torch::kFloat16 &&
+            mask_dtype != torch::kBFloat16) {
+            std::cout << "⚠️  Unsupported attention mask dtype for Metal backend, using PyTorch reference implementation" << std::endl;
+            return at::native::scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask,
+                dropout_p,
+                is_causal,
+                scale,
+                enable_gqa
+            );
+        }
     }
 
     if (enable_gqa) {
@@ -1205,7 +1278,7 @@ torch::Tensor MetalSDPABackend::scaled_dot_product_attention(
     auto orig_dtype = query.scalar_type();
 
     // Call Swift Flash Attention (using processed tensors from call_swift_flash_attention)
-    auto result = call_swift_flash_attention(query, key, value, is_causal, softmax_scale);
+    auto result = call_swift_flash_attention(query, key, value, attn_mask, is_causal, softmax_scale);
 
     // Convert result back to original layout if input was FLUX
     // Note: The layout conversion is now handled within call_swift_flash_attention
@@ -1359,6 +1432,17 @@ OutputPrecision determine_output_precision(const QuantizationConfig& config,
 
     // If explicitly specified in config, use that
     if (config.output_precision != OutputPrecision::FP32) {
+        bool has_quantized_inputs = (config.key_precision == QuantizationPrecision::INT4 ||
+                                    config.key_precision == QuantizationPrecision::INT8 ||
+                                    config.value_precision == QuantizationPrecision::INT4 ||
+                                    config.value_precision == QuantizationPrecision::INT8);
+
+        if (has_quantized_inputs) {
+            printf("   Overriding configured output precision (%s) to FP32 for quantized inputs\n",
+                   QuantizationConfig::precision_to_string(config.output_precision).c_str());
+            return OutputPrecision::FP32;
+        }
+
         printf("   Using explicitly configured output precision: %s\n",
                QuantizationConfig::precision_to_string(config.output_precision).c_str());
         return config.output_precision;
@@ -1376,8 +1460,8 @@ OutputPrecision determine_output_precision(const QuantizationConfig& config,
                                    config.value_precision == QuantizationPrecision::INT8);
 
         if (has_quantized_inputs) {
-            printf("   FP32 input with quantized K/V → using FP16 output for efficiency\n");
-            return OutputPrecision::FP16;
+            printf("   FP32 input with quantized K/V → maintaining FP32 output for MPS compatibility\n");
+            return OutputPrecision::FP32;
         } else {
             printf("   FP32 input, no quantization → maintaining FP32 output\n");
             return OutputPrecision::FP32;
@@ -1410,21 +1494,26 @@ torch::Tensor create_typed_output_tensor(const torch::Tensor& reference_tensor,
            scalar_type_to_string(reference_tensor.scalar_type()).c_str(),
            scalar_type_to_string(target_dtype).c_str());
 
-    // Create output tensor with correct dtype and same shape as reference
-    auto output = torch::empty_like(reference_tensor, target_dtype);
+    // Allocate storage large enough for FP32 (double logical size) to match Swift expectations
+    auto options = reference_tensor.options().dtype(target_dtype).layout(torch::kStrided);
+    auto logical_shape = reference_tensor.sizes();
+    auto logical_elements = reference_tensor.numel();
+
+    auto storage = torch::empty({logical_elements * 2}, options);
+    auto output = storage.narrow(0, 0, logical_elements).view(logical_shape);
 
     if (validate_size) {
         size_t expected_size = calculate_expected_buffer_size(reference_tensor, output_precision);
-        size_t actual_size = output.numel() * output.element_size();
+        size_t storage_size = storage.numel() * storage.element_size();
 
-        if (actual_size != expected_size) {
+        if (storage_size != 2 * expected_size) {
             throw std::runtime_error(
-                "Output buffer size mismatch: expected " + std::to_string(expected_size) +
-                " bytes, got " + std::to_string(actual_size) + " bytes"
+                "Output buffer storage size mismatch: expected " + std::to_string(2 * expected_size) +
+                " bytes, got " + std::to_string(storage_size) + " bytes"
             );
         }
 
-        printf("✅ Output buffer size validated: %zu bytes\n", actual_size);
+        printf("✅ Output buffer storage validated: %zu bytes\n", storage_size);
     }
 
     return output;
@@ -1632,7 +1721,7 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention_unified(
     size_t q_bytes = q_processed.numel() * q_processed.element_size();
     size_t k_bytes = k_processed.numel() * k_processed.element_size();
     size_t v_bytes = v_processed.numel() * v_processed.element_size();
-    size_t out_bytes = output.numel() * output.element_size();
+    size_t out_bytes = output.storage().nbytes();
 
     mfa_error_t result;
 
@@ -1675,7 +1764,7 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention_unified(
         // The new API parameters are:
         // - q_precision: Input tensor precision (0=FP16, 1=BF16, 2=FP32)
         // - k_precision: Target quantization precision (3=INT8, 4=INT4)
-        // - v_precision: Quantization mode (0=tensorWise, 2=blockWise)
+        // - v_precision: Quantization mode (0=tensorWise, 2=blockwise)
 
         // Determine input precision from tensor dtype
         int32_t input_precision = 0; // Default to FP16
@@ -1731,7 +1820,7 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention_unified(
             0.0f, 0,  // vScale, vZeroPoint - not used in new API
             input_precision,        // Input precision: 0=FP16, 1=BF16, 2=FP32
             target_quantization,    // Target quantization precision: 3=INT8, 4=INT4
-            quantization_mode,      // Quantization mode: 0=tensorWise, 2=blockWise
+            quantization_mode,      // Quantization mode: 0=tensorWise, 2=blockwise
             output_precision_int,   // Output precision
             false, false, false, false  // No transpose for standard layout
         );
@@ -1807,8 +1896,8 @@ torch::Tensor MetalSDPABackend::quantized_scaled_dot_product_attention(
     config.key_precision = QuantizationConfig::string_to_quantization_precision(precision);
     config.value_precision = QuantizationConfig::string_to_quantization_precision(precision);
 
-    // Use FP16 output for efficiency (matches legacy behavior)
-    config.output_precision = OutputPrecision::FP16;
+    // Default to FP32 output for stability with MPS accumulators
+    config.output_precision = OutputPrecision::FP32;
 
     printf("🔀 Legacy API converted to: granularity=%s, q_precision=%s, kv_precision=%s\n",
            QuantizationConfig::granularity_to_string(config.granularity).c_str(),
